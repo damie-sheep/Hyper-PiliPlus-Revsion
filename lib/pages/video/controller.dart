@@ -763,6 +763,7 @@ class VideoDetailController extends GetxController
       pgcType: isUgc ? null : pgcType,
       videoType: videoType,
       onInit: () {
+        if (isClosed) return;
         videoState.value = true;
         setSubtitle(vttSubtitlesIndex.value);
       },

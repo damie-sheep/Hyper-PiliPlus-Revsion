@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:PiliPlus/common/widgets/route_aware_mixin.dart';
+import 'package:PiliPlus/common/widgets/translucent_column.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_card_transition.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_card_h.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_card_v.dart';
@@ -62,6 +63,17 @@ class _Pixels {
     final y = point.dy.floor().clamp(0, height - 1);
     final i = (y * width + x) * 4;
     return Color.fromARGB(bytes[i + 3], bytes[i], bytes[i + 1], bytes[i + 2]);
+  }
+
+  int darkPixels(Rect rect) {
+    var count = 0;
+    for (var y = rect.top.ceil(); y < rect.bottom.floor(); y++) {
+      for (var x = rect.left.ceil(); x < rect.right.floor(); x++) {
+        final color = at(Offset(x.toDouble(), y.toDouble()));
+        if (color.r < 0.4 && color.g < 0.4 && color.b < 0.4) count++;
+      }
+    }
+    return count;
   }
 
   Rect? magentaBounds() {
@@ -187,6 +199,331 @@ void main() {
   });
   tearDown(Get.reset);
 
+  testWidgets('metadata fade preserves excluded season and action tap areas', (
+    tester,
+  ) async {
+    var expanded = 0;
+    var action = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: GestureDetector(
+            onTap: () => expanded++,
+            child: TranslucentColumn(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                VideoTransitionTargetPart(
+                  part: VideoTransitionPart.details,
+                  child: TranslucentColumn(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      NoTranslucentArea(
+                        child: SizedBox(
+                          width: 300,
+                          height: 50,
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: SizedBox(
+                              width: 100,
+                              child: TextButton(
+                                onPressed: () => action++,
+                                child: const Text('ACTION'),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 300, height: 50),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('ACTION'));
+    expect(action, 1);
+    expect(expanded, 0);
+    await tester.tapAt(const Offset(250, 25));
+    expect(expanded, 0);
+    await tester.tapAt(const Offset(250, 75));
+    expect(expanded, 1);
+  });
+
+  testWidgets(
+    'shared player restoration waits until outgoing stage is removed',
+    (tester) async {
+      await _open(tester);
+      await tester.pumpAndSettle();
+      _route.navigator!.pop();
+      await tester.pump();
+      var ready = false;
+      final restoration = waitForVideoPageReturn().then((_) => ready = true);
+      await tester.pump(_route.reverseTransitionDuration ~/ 2);
+      expect(ready, isFalse);
+      expect(
+        find.byKey(const ValueKey('video-transition-stage')),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+      await restoration;
+      expect(ready, isTrue);
+      expect(
+        find.byKey(const ValueKey('video-transition-stage')),
+        findsNothing,
+      );
+    },
+  );
+
+  for (final sliver in [false, true]) {
+    testWidgets(
+      'lower content reveals downward without relayout, sliver=$sliver',
+      (tester) async {
+        tester.view.physicalSize = const Size(400, 800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final scroll = ScrollController();
+        addTearDown(scroll.dispose);
+        final rows = [
+          for (var i = 0; i < (sliver ? 8 : 6); i++)
+            SizedBox(
+              key: ValueKey('reveal-row-$i'),
+              width: double.infinity,
+              height: 100,
+              child: const ColoredBox(color: Color(0xff4caf50)),
+            ),
+        ];
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: _screenKey,
+            child: GetMaterialApp(
+              debugShowCheckedModeBanner: false,
+              home: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () {
+                    _route = _SeekableRoute(
+                      builder: (_) => Scaffold(
+                        backgroundColor: Colors.white,
+                        body: sliver
+                            ? CustomScrollView(
+                                controller: scroll,
+                                slivers: [
+                                  const SliverToBoxAdapter(
+                                    child: SizedBox(height: 150),
+                                  ),
+                                  VideoTransitionLayer(
+                                    sliver: true,
+                                    child: SliverList.list(children: rows),
+                                  ),
+                                ],
+                              )
+                            : Column(
+                                children: [
+                                  const SizedBox(height: 150),
+                                  SizedBox(
+                                    height: 600,
+                                    child: VideoTransitionLayer(
+                                      child: Column(children: rows),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                      ),
+                    );
+                    Navigator.of(context).push(_route);
+                  },
+                  child: const Text('OPEN'),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('OPEN'));
+        await tester.pump();
+        await _seek(tester, 0.5);
+        final first = tester.element(
+          find.byKey(const ValueKey('reveal-row-0')),
+        );
+        final middle = await _pixels(tester, 'lower-middle-$sliver');
+        expect(middle.at(const Offset(20, 180)), const Color(0xff4caf50));
+        expect(middle.at(const Offset(20, 610)), Colors.white);
+        await _seek(tester, 0.9);
+        expect(
+          (await _pixels(
+            tester,
+            'lower-late-$sliver',
+          )).at(const Offset(20, 610)),
+          const Color(0xff4caf50),
+        );
+        expect(
+          identical(
+            tester.element(find.byKey(const ValueKey('reveal-row-0'))),
+            first,
+          ),
+          isTrue,
+        );
+        await _seek(tester, 1);
+        if (sliver) {
+          scroll.jumpTo(30);
+          await tester.pump();
+          await _seek(tester, 0.5);
+          await _seek(tester, 1);
+          expect(scroll.offset, 30);
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'nested horizontal return and cancelled gesture have no source gap',
+    (tester) async {
+      tester.view.physicalSize = const Size(400, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final mounts = <int, int>{};
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: _screenKey,
+          child: GetMaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: _StackProbe(index: 0, mounts: mounts),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('stack-source-0')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('stack-counter-1')));
+      await tester.pump();
+      expect(find.text('count 1'), findsOneWidget);
+      final horizontalSource = tester.getRect(
+        find.byKey(const ValueKey('stack-source-1')),
+      );
+      await tester.tap(find.byKey(const ValueKey('stack-source-1')));
+      await tester.pumpAndSettle();
+      expect(mounts, {0: 1, 1: 1, 2: 1});
+      final routeB = _route;
+      for (final g in [0.1, 0.28, 0.5, 1.0]) {
+        await _seek(tester, g);
+        final shot = await _pixels(tester, 'horizontal-slot-$g');
+        if (g >= 0.28) {
+          final frame = VideoTransitionGeometry(
+            source: horizontalSource,
+            viewport: const Size(400, 800),
+            progress: routeB.animation!.value,
+          );
+          final slot = frame.mapRect(const Rect.fromLTWH(0, 24, 400, 225));
+          expect(shot.at(slot.center), _playerColor);
+          expect(
+            shot.at(Offset(slot.center.dx, slot.bottom + 4)),
+            Colors.white,
+            reason: 'The player must not leave a second media surface below its slot',
+          );
+        }
+      }
+      routeB
+        ..handleStartBackGesture(progress: 1)
+        ..handleUpdateBackGestureProgress(progress: 0.08);
+      await tester.pump();
+      routeB.handleCancelBackGesture();
+      await tester.pumpAndSettle();
+      final sourceB = find.byWidgetPredicate(
+        (widget) => widget is VideoCardHero && widget.tag == 'stack-1',
+        skipOffstage: false,
+      );
+      final hidden = find.descendant(
+        of: sourceB,
+        matching: find.byType(Opacity, skipOffstage: false),
+        skipOffstage: false,
+      );
+      expect(tester.widget<Opacity>(hidden.first).opacity, 0);
+      for (final expectedIndex in [1, 0]) {
+        final route = ModalRoute.of(
+          tester.element(
+            find.byKey(ValueKey('stack-page-${expectedIndex + 1}')),
+          ),
+        )!;
+        route.navigator!.pop();
+        await tester.pump();
+        final end = route.reverseTransitionDuration.inMilliseconds;
+        for (var elapsed = 16; elapsed <= end + 80; elapsed += 16) {
+          await tester.pump(const Duration(milliseconds: 16));
+          if (elapsed >= end - 32) {
+            final ink = (await _pixels(
+              tester,
+              'stack-$expectedIndex-$elapsed',
+            )).magentaBounds();
+            expect(
+              ink,
+              isNotNull,
+              reason: 'Nested source missing at $elapsed ms',
+            );
+            expect(ink!.top, greaterThan(expectedIndex == 1 ? 480 : 400));
+          }
+        }
+        await tester.pumpAndSettle();
+        if (expectedIndex == 1) {
+          expect(find.text('count 1'), findsOneWidget);
+        }
+      }
+      expect(mounts, {0: 1, 1: 1, 2: 1});
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('entry and exit have symmetric wall-clock geometry', (
+    tester,
+  ) async {
+    await _open(tester);
+    await tester.pump();
+    expect(_route.transitionDuration, _route.reverseTransitionDuration);
+    final widths = <double>[];
+    const step = Duration(milliseconds: 40);
+    final steps =
+        _route.transitionDuration.inMilliseconds ~/ step.inMilliseconds;
+    for (var i = 1; i <= steps; i++) {
+      await tester.pump(step);
+      widths.add(tester.getRect(find.byKey(_playerKey)).width);
+      await _pixels(tester, 'timing-open-${i * step.inMilliseconds}');
+    }
+    await tester.pumpAndSettle();
+    _route.navigator!.pop();
+    await tester.pump();
+    for (var i = 1; i < steps; i++) {
+      await tester.pump(step);
+      final width = tester.getRect(find.byKey(_playerKey)).width;
+      expect(width, closeTo(widths[steps - i - 1], 0.1));
+      await _pixels(tester, 'timing-close-${i * step.inMilliseconds}');
+    }
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('source stays painted across every route removal frame', (
+    tester,
+  ) async {
+    await _open(tester);
+    await tester.pumpAndSettle();
+    _route.navigator!.pop();
+    await tester.pump();
+    final end = _route.reverseTransitionDuration.inMilliseconds;
+    for (var elapsed = 16; elapsed <= end + 96; elapsed += 16) {
+      await tester.pump(const Duration(milliseconds: 16));
+      if (elapsed >= end - 48) {
+        final image = await _pixels(tester, 'source-handoff-$elapsed');
+        expect(
+          image.magentaBounds(),
+          isNotNull,
+          reason: 'Source title disappeared at return frame $elapsed ms',
+        );
+      }
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   for (final right in [false, true]) {
     testWidgets(
       'painted skeleton follows expansion and contraction, right=$right',
@@ -204,7 +541,10 @@ void main() {
             progress: _route.animation!.value,
           );
           final playerRect = tester.getRect(find.byKey(_playerKey));
-          final expected = frame.mapRect(const Rect.fromLTWH(0, 24, 400, 225));
+          final expected = frame.mediaRect(
+            sourceCover: source.topLeft & const Size(160, 90),
+            targetCover: const Rect.fromLTWH(0, 24, 400, 225),
+          );
           expect(playerRect.left, closeTo(expected.left, 0.01));
           expect(playerRect.top, closeTo(expected.top, 0.01));
           expect(playerRect.width, closeTo(expected.width, 0.01));
@@ -223,7 +563,13 @@ void main() {
           expect(frame.container.contains(point), isTrue);
           final color =
               tester.widget<Container>(bar).decoration as BoxDecoration;
-          expect(shot.at(point), color.color);
+          if (g >= 0.5) {
+            expect(shot.at(point), color.color);
+          } else {
+            // The early skeleton is blended with the detail surface, rather
+            // than suddenly appearing at full opacity with the real metadata.
+            expect(shot.at(point), isNot(Colors.white));
+          }
           if (g >= 0.5) {
             expect(shot.at(playerRect.center), _playerColor);
             expect(shot.magentaBounds(), isNull);
@@ -405,7 +751,7 @@ void main() {
       bool? ready;
       final pending = waitForVideoPageEntry(_tag)
           .then((value) => ready = value);
-      await tester.pump(const Duration(milliseconds: 32));
+      await tester.pump(const Duration(milliseconds: 16));
       expect(ready, isNull);
       if (cancel) _route.navigator!.pop();
       await tester.pumpAndSettle();
@@ -506,10 +852,13 @@ void main() {
         (tester) async {
           await tester.pumpWidget(
             GetMaterialApp(
-              builder: (context, child) => MediaQuery(
-                data: MediaQuery.of(context)
-                    .copyWith(textScaler: TextScaler.linear(scale)),
-                child: child!,
+              builder: (context, child) => RepaintBoundary(
+                key: _screenKey,
+                child: MediaQuery(
+                  data: MediaQuery.of(context)
+                      .copyWith(textScaler: TextScaler.linear(scale)),
+                  child: child!,
+                ),
               ),
               home: Scaffold(
                 body: Center(
@@ -538,6 +887,14 @@ void main() {
           );
           await tester.pumpAndSettle();
           final card = find.byType(VideoCardHero);
+          final titlePart = find.byWidgetPredicate(
+            (widget) =>
+                widget is VideoTransitionSourcePart &&
+                widget.part == VideoTransitionPart.title,
+          );
+          final sourceTitleRect = tester.getRect(titlePart);
+          final inkBefore = (await _pixels(tester)).darkPixels(sourceTitleRect);
+          expect(inkBefore, greaterThan(0));
           final parts = tester.widgetList<VideoTransitionSourcePart>(
             find.byType(VideoTransitionSourcePart),
           );
@@ -563,6 +920,18 @@ void main() {
             greaterThan(quarter.width),
           );
           _route.navigator!.pop();
+          await tester.pump();
+          final end = _route.reverseTransitionDuration.inMilliseconds;
+          for (var elapsed = 16; elapsed <= end + 64; elapsed += 16) {
+            await tester.pump(const Duration(milliseconds: 16));
+            if (elapsed >= end - 32) {
+              expect(
+                (await _pixels(tester)).darkPixels(sourceTitleRect),
+                greaterThan(inkBefore ~/ 5),
+                reason: 'Real card title vanished at $elapsed ms',
+              );
+            }
+          }
           await tester.pumpAndSettle();
           expect(find.byType(VideoCardHero), findsOneWidget);
           expect(Get.isRegistered<_ProbeController>(), isFalse);
@@ -585,6 +954,116 @@ class _SeekableRoute extends VideoPageTransitionRoute<void> {
     controller!
       ..stop()
       ..value = value;
+  }
+}
+
+class _StackProbe extends StatefulWidget {
+  const _StackProbe({required this.index, required this.mounts});
+  final int index;
+  final Map<int, int> mounts;
+  @override
+  State<_StackProbe> createState() => _StackProbeState();
+}
+
+class _StackProbeState extends State<_StackProbe> {
+  int count = 0;
+  @override
+  void initState() {
+    super.initState();
+    widget.mounts.update(widget.index, (value) => value + 1, ifAbsent: () => 1);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final index = widget.index;
+    Widget cover() => VideoTransitionSourcePart(
+      part: VideoTransitionPart.cover,
+      child: SizedBox(
+        width: index == 0 ? 160 : 140,
+        height: 90,
+        child: const ColoredBox(color: Colors.orange),
+      ),
+    );
+    Widget title() => const VideoTransitionSourcePart(
+      part: VideoTransitionPart.title,
+      child: Text(
+        'SOURCE TITLE',
+        style: TextStyle(fontSize: 14, fontFamily: 'Ahem', color: _sourceInk),
+      ),
+    );
+    Widget page = Scaffold(
+      key: ValueKey('stack-page-$index'),
+      backgroundColor: Colors.white,
+      body: Stack(
+        children: [
+          if (index > 0)
+            const Positioned(
+              left: 0,
+              top: 24,
+              width: 400,
+              height: 225,
+              child: VideoTransitionTargetPart(
+                part: VideoTransitionPart.cover,
+                child: ColoredBox(color: _playerColor),
+              ),
+            ),
+          Positioned(
+            left: 20,
+            top: 280,
+            child: TextButton(
+              key: ValueKey('stack-counter-$index'),
+              onPressed: () => setState(() => count++),
+              child: Text('count $count'),
+            ),
+          ),
+          if (index < 2)
+            Positioned(
+              left: 20,
+              top: index == 0 ? 340 : 500,
+              width: index == 0 ? 160 : 350,
+              height: index == 0 ? 184 : 110,
+              child: VideoCardHero(
+                tag: 'stack-$index',
+                surfaceColor: Colors.white,
+                child: GestureDetector(
+                  key: ValueKey('stack-source-$index'),
+                  onTap: () {
+                    _route = _SeekableRoute(
+                      tag: 'stack-$index',
+                      builder: (_) =>
+                          _StackProbe(index: index + 1, mounts: widget.mounts),
+                    );
+                    Navigator.of(context).push(_route);
+                  },
+                  child: ColoredBox(
+                    color: Colors.white,
+                    child: index == 0
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [cover(), title()],
+                          )
+                        : Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              cover(),
+                              Expanded(child: title()),
+                            ],
+                          ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (index > 0) {
+      page = VideoPageHeroTarget(
+        tag: 'stack-${index - 1}',
+        surfaceColor: Colors.white,
+        child: page,
+      );
+    }
+    return page;
   }
 }
 

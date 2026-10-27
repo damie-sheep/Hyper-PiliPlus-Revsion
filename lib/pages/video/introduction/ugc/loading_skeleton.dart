@@ -48,6 +48,47 @@ class UgcIntroTitleSlot extends StatelessWidget {
   );
 }
 
+/// Data readiness is independent of route progress. Only the introduction
+/// crossfades; the page and live player above it are never replaced or faded.
+class UgcIntroContent extends StatelessWidget {
+  const UgcIntroContent({
+    super.key,
+    required this.loading,
+    required this.title,
+    this.child,
+  }) : assert(loading || child != null);
+
+  final bool loading;
+  final String? title;
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    child: AnimatedSwitcher(
+      duration: const Duration(milliseconds: 140),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      layoutBuilder: (current, previous) => Stack(
+        alignment: Alignment.topLeft,
+        children: [
+          for (final child in previous)
+            Positioned.fill(
+              child: ExcludeSemantics(child: IgnorePointer(child: child)),
+            ),
+          ?current,
+        ],
+      ),
+      child: loading
+          ? UgcIntroLoadingSkeleton(
+              key: const ValueKey('loading'),
+              title: title,
+            )
+          : KeyedSubtree(key: const ValueKey('resolved'), child: child!),
+    ),
+  );
+}
+
 /// A static, inexpensive placeholder; it never invents video metadata.
 class UgcIntroLoadingSkeleton extends StatelessWidget {
   const UgcIntroLoadingSkeleton({super.key, required this.title});
@@ -107,15 +148,23 @@ class UgcIntroLoadingSkeleton extends StatelessWidget {
                   ],
                 ),
         ),
-        const SizedBox(height: 8),
-        bar(180, height: 8),
-        const SizedBox(height: 18),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: List.generate(5, (_) => bar(36, height: 28)),
+        VideoTransitionTargetPart(
+          part: VideoTransitionPart.details,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 8),
+              bar(180, height: 8),
+              const SizedBox(height: 18),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: List.generate(5, (_) => bar(36, height: 28)),
+              ),
+              const SizedBox(height: 18),
+              bar(double.infinity, height: 48),
+            ],
+          ),
         ),
-        const SizedBox(height: 18),
-        bar(double.infinity, height: 48),
       ],
     );
   }

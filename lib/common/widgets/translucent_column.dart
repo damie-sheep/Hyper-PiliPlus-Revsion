@@ -21,6 +21,12 @@ import 'package:flutter/rendering.dart'
     show RenderProxyBox, BoxHitTestResult, RenderFlex, FlexParentData;
 import 'package:flutter/widgets.dart';
 
+/// Visual wrappers around a nested translucent column must preserve its
+/// decision to exclude an interactive area from the enclosing introduction tap.
+abstract interface class TranslucentHitTestProxy {
+  bool get forwardTranslucentHitTest;
+}
+
 class TranslucentColumn extends Flex {
   const TranslucentColumn({
     super.key,
@@ -80,7 +86,10 @@ class RenderTranslucentColumn extends RenderFlex {
               transformed.dy >= 0.0 &&
               transformed.dy < child!.size.height) {
             final hit = child.hitTest(result, position: transformed);
-            if (child is RenderAnimatedHeight) {
+            if (child is RenderAnimatedHeight ||
+                (child is TranslucentHitTestProxy &&
+                    (child as TranslucentHitTestProxy)
+                        .forwardTranslucentHitTest)) {
               return hit;
             }
             if (child is RenderNoTranslucentArea) {

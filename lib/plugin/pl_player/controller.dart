@@ -50,6 +50,7 @@ import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:PiliPlus/utils/utils.dart';
+import 'package:PiliPlus/utils/video_transition_trace.dart';
 import 'package:archive/archive.dart' show getCrc32;
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:easy_debounce/easy_throttle.dart';
@@ -78,6 +79,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   VideoController? _videoController;
 
   static PlPlayerController? _instance;
+  int _sourceGeneration = 0;
 
   PlayerStatus playerStatus = .paused;
 
@@ -720,6 +722,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     Volume? volume,
     bool autoFullScreenFlag = false,
   }) async {
+    final sourceGeneration = ++_sourceGeneration;
+    traceVideoTransition(this, 'source:start generation=$sourceGeneration');
     try {
       _processing = true;
       this.isLive = isLive;
@@ -747,12 +751,14 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
           _videoPlayerController!.state.playing) {
         await pause(notify: false);
       }
+      if (sourceGeneration != _sourceGeneration) return;
 
       if (_playerCount == 0) {
         return;
       }
       // 配置Player 音轨、字幕等等
       await _createVideoController(dataSource, seekTo, volume);
+      if (sourceGeneration != _sourceGeneration) return;
 
       if (_playerCount == 0) {
         _removeListeners();
@@ -772,15 +778,22 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       }
 
       await _initializePlayer();
+      if (sourceGeneration != _sourceGeneration) return;
+      traceVideoTransition(
+        this,
+        'source:attached generation=$sourceGeneration',
+      );
       onInit?.call();
     } catch (err, stackTrace) {
+      if (sourceGeneration != _sourceGeneration) return;
+      traceVideoTransition(this, 'source:error generation=$sourceGeneration');
       dataStatus.value = DataStatus.error;
       if (kDebugMode) {
         debugPrint(stackTrace.toString());
         debugPrint('plPlayer err:  $err');
       }
     } finally {
-      _processing = false;
+      if (sourceGeneration == _sourceGeneration) _processing = false;
     }
   }
 

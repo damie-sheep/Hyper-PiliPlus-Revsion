@@ -1,8 +1,11 @@
 import 'dart:async' show Completer, unawaited;
+import 'dart:math' show max;
 import 'dart:ui' as ui show Image;
 
+import 'package:PiliPlus/common/widgets/translucent_column.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_transition_geometry.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
+import 'package:PiliPlus/utils/video_transition_trace.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/rendering.dart';
@@ -11,10 +14,21 @@ import 'package:get/get.dart' show GetPageRoute;
 import 'package:material_ui/material_ui.dart';
 
 const int videoCoverDecodeWidth = 640;
-const Duration videoPageTransitionDuration = Duration(milliseconds: 680);
-const Duration videoPageReverseTransitionDuration = Duration(milliseconds: 320);
+const Duration videoPageTransitionDuration = Duration(
+  milliseconds: int.fromEnvironment('VIDEO_TRANSITION_MS', defaultValue: 400),
+);
+const Duration videoPageReverseTransitionDuration = videoPageTransitionDuration;
 ({Object tag, _VideoCardHeroState source, DateTime time})? _pendingTransition;
 final _enteringVideoPages = <Object, Completer<bool>>{};
+final _returningVideoPages = <Future<void>>{};
+
+/// The media player is shared by stacked details. Restoring the previous
+/// source before the outgoing carrier disappears clears its closing texture.
+Future<void> waitForVideoPageReturn() async {
+  while (_returningVideoPages.isNotEmpty) {
+    await Future.wait(_returningVideoPages.toList());
+  }
+}
 
 Future<bool> waitForVideoPageEntry(Object? tag) async =>
     await _enteringVideoPages[tag]?.future ?? true;
@@ -61,6 +75,7 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   @override
   void install() {
     super.install();
+    traceVideoTransition(_entryTag, 'route:install');
     if (_entryTag case final tag?) _enteringVideoPages[tag] = _entryReady;
     controller
       ?..addStatusListener(_entryStatus)
@@ -75,6 +90,7 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   }
 
   void _entryStatus(AnimationStatus status) {
+    traceVideoTransition(_entryTag, 'route:${status.name}');
     if (status == AnimationStatus.completed) _finishEntry(true);
   }
 
@@ -85,7 +101,18 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   @override
   bool didPop(T? result) {
     final popped = super.didPop(result);
-    if (popped) _finishEntry(false);
+    if (popped) {
+      _finishEntry(false);
+      traceVideoTransition(_entryTag, 'route:pop');
+      final leaving = completed.then<void>((_) {});
+      _returningVideoPages.add(leaving);
+      unawaited(
+        leaving.whenComplete(() {
+          _returningVideoPages.remove(leaving);
+          traceVideoTransition(_entryTag, 'route:removed');
+        }),
+      );
+    }
     return popped;
   }
 
@@ -154,7 +181,7 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   ) => child;
 }
 
-enum VideoTransitionPart { cover, tabs, owner, title }
+enum VideoTransitionPart { cover, tabs, owner, title, details }
 
 /// Marks the actual painted child, preserving rich text, line breaks and scale.
 class VideoTransitionSourcePart extends SingleChildRenderObjectWidget {
@@ -204,10 +231,14 @@ class VideoTransitionTargetPart extends SingleChildRenderObjectWidget {
   }
 }
 
-class _RenderTargetPart extends RenderProxyBox {
+class _RenderTargetPart extends RenderProxyBox
+    implements TranslucentHitTestProxy {
   _RenderTargetPart(this.part);
   VideoTransitionPart part;
   _RenderVideoStage? _stage;
+
+  @override
+  bool get forwardTranslucentHitTest => part == VideoTransitionPart.details;
 
   @override
   bool get alwaysNeedsCompositing => true;
@@ -237,14 +268,61 @@ class _RenderTargetPart extends RenderProxyBox {
     super.detach();
   }
 
-  double get _opacity =>
-      part == VideoTransitionPart.title &&
-          _stage?.snapshot?.parts[VideoTransitionPart.title] != null
-      ? _stage!.geometry.targetTitleOpacity
-      : 1;
+  double get _opacity {
+    final stage = _stage;
+    if (stage?.snapshot == null) return 1;
+    return switch (part) {
+      VideoTransitionPart.title
+          when stage!.snapshot!.parts[VideoTransitionPart.title] != null =>
+        stage.geometry.targetTitleOpacity,
+      VideoTransitionPart.tabs => stage!.geometry.tabsOpacity,
+      VideoTransitionPart.owner ||
+      VideoTransitionPart.details => stage!.geometry.informationOpacity,
+      _ => 1,
+    };
+  }
+
+  ({Rect clip, Matrix4 transform})? get _media {
+    final stage = _stage;
+    if (part != VideoTransitionPart.cover ||
+        stage?.snapshot == null ||
+        stage!.geometry.expansion == 1) {
+      return null;
+    }
+    final slot = stage.mediaRect;
+    final target = stage._target(part);
+    if (slot == null || target == null) return null;
+    final frame = stage.geometry;
+    final local =
+        ((slot.topLeft - frame.container.topLeft) / frame.scale -
+            target.rect.topLeft) &
+        (slot.size / frame.scale);
+    final scale = max(local.width / size.width, local.height / size.height);
+    final origin = local.center - Offset(size.width, size.height) * (scale / 2);
+    return (
+      clip: local,
+      transform: Matrix4.identity()
+        ..translateByDouble(origin.dx, origin.dy, 0, 1)
+        ..scaleByDouble(scale, scale, 1, 1),
+    );
+  }
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    if (_media case final media?) {
+      context.pushClipRect(needsCompositing, offset, media.clip, (
+        context,
+        offset,
+      ) {
+        context.pushTransform(
+          needsCompositing,
+          offset,
+          media.transform,
+          super.paint,
+        );
+      });
+      return;
+    }
     final opacity = _opacity;
     if (opacity == 1) {
       super.paint(context, offset);
@@ -254,8 +332,26 @@ class _RenderTargetPart extends RenderProxyBox {
   }
 
   @override
-  bool hitTest(BoxHitTestResult result, {required Offset position}) =>
-      _opacity > 0 && super.hitTest(result, position: position);
+  bool hitTest(BoxHitTestResult result, {required Offset position}) {
+    if (_media case final media?) {
+      if (!media.clip.contains(position)) return false;
+      return result.addWithPaintTransform(
+        transform: media.transform,
+        position: position,
+        hitTest: (result, position) =>
+            super.hitTest(result, position: position),
+      );
+    }
+    return _opacity > 0 && super.hitTest(result, position: position);
+  }
+
+  @override
+  void applyPaintTransform(RenderBox child, Matrix4 transform) {
+    if (_media case final media?) transform.multiply(media.transform);
+  }
+
+  @override
+  Rect? describeApproximatePaintClip(RenderObject child) => _media?.clip;
 }
 
 RenderParagraph? _paragraphOf(RenderObject root) {
@@ -318,6 +414,7 @@ class VideoCardHero extends StatefulWidget {
 class _VideoCardHeroState extends State<VideoCardHero> {
   final _boundary = GlobalKey();
   bool _covered = false;
+  bool _requestedCover = false;
 
   RenderRepaintBoundary? get _box =>
       _boundary.currentContext?.findRenderObject() as RenderRepaintBoundary?;
@@ -382,8 +479,11 @@ class _VideoCardHeroState extends State<VideoCardHero> {
   }
 
   void cover(bool value) {
+    _requestedCover = value;
     void update() {
-      if (mounted && _covered != value) setState(() => _covered = value);
+      if (mounted && _covered != _requestedCover) {
+        setState(() => _covered = _requestedCover);
+      }
     }
 
     if (WidgetsBinding.instance.schedulerPhase ==
@@ -438,17 +538,128 @@ class VideoTransitionLayer extends StatelessWidget {
       animation: animation,
       child: child,
       builder: (context, child) {
-        final expansion = Curves.easeInOutCubic.transform(animation.value);
-        final opacity = const Interval(0.55, 0.95).transform(expansion);
+        final frame = VideoTransitionGeometry(
+          source: const Rect.fromLTWH(0, 0, 1, 1),
+          viewport: const Size(1, 1),
+          progress: animation.value,
+        );
+        final opacity = frame.lowerOpacity;
         return sliver
-            ? SliverOpacity(opacity: opacity, sliver: child!)
+            ? _VideoSliverReveal(
+                fraction: frame.lowerReveal,
+                child: SliverOpacity(opacity: opacity, sliver: child!),
+              )
             : IgnorePointer(
                 ignoring: opacity == 0,
-                child: Opacity(opacity: opacity, child: child),
+                child: ClipRect(
+                  clipper: _VideoRevealClipper(frame.lowerReveal),
+                  child: Transform.translate(
+                    offset: Offset(0, 12 * (1 - frame.lowerReveal)),
+                    child: Opacity(opacity: opacity, child: child),
+                  ),
+                ),
               );
       },
     );
   }
+}
+
+class _VideoRevealClipper extends CustomClipper<Rect> {
+  const _VideoRevealClipper(this.fraction);
+  final double fraction;
+
+  @override
+  Rect getClip(Size size) =>
+      Offset.zero & Size(size.width, size.height * fraction);
+  @override
+  bool shouldReclip(_VideoRevealClipper oldClipper) =>
+      fraction != oldClipper.fraction;
+}
+
+class _VideoSliverReveal extends SingleChildRenderObjectWidget {
+  const _VideoSliverReveal({required this.fraction, required super.child});
+  final double fraction;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderVideoSliverReveal()..fraction = fraction;
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderVideoSliverReveal renderObject,
+  ) {
+    renderObject.fraction = fraction;
+  }
+}
+
+/// Paint-only reveal from the actual sliver's leading edge. Scroll extent and
+/// layout stay unchanged, so the list and its scroll position remain mounted.
+class _RenderVideoSliverReveal extends RenderProxySliver {
+  double _fraction = 1;
+  set fraction(double value) {
+    if (_fraction == value) return;
+    _fraction = value;
+    markNeedsPaint();
+    markNeedsSemanticsUpdate();
+  }
+
+  @override
+  bool get alwaysNeedsCompositing => true;
+
+  Rect get _clip {
+    final bounds = paintBounds;
+    return switch (applyGrowthDirectionToAxisDirection(
+      constraints.axisDirection,
+      constraints.growthDirection,
+    )) {
+      AxisDirection.down => Rect.fromLTWH(
+        bounds.left,
+        bounds.top,
+        bounds.width,
+        bounds.height * _fraction,
+      ),
+      AxisDirection.up => Rect.fromLTWH(
+        bounds.left,
+        bounds.bottom - bounds.height * _fraction,
+        bounds.width,
+        bounds.height * _fraction,
+      ),
+      AxisDirection.right => Rect.fromLTWH(
+        bounds.left,
+        bounds.top,
+        bounds.width * _fraction,
+        bounds.height,
+      ),
+      AxisDirection.left => Rect.fromLTWH(
+        bounds.right - bounds.width * _fraction,
+        bounds.top,
+        bounds.width * _fraction,
+        bounds.height,
+      ),
+    };
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (_fraction <= 0) return;
+    context.pushClipRect(needsCompositing, offset, _clip, super.paint);
+  }
+
+  @override
+  Rect? describeApproximatePaintClip(RenderObject child) => _clip;
+
+  @override
+  bool hitTestChildren(
+    SliverHitTestResult result, {
+    required double mainAxisPosition,
+    required double crossAxisPosition,
+  }) =>
+      mainAxisPosition < (geometry?.paintExtent ?? 0) * _fraction &&
+      super.hitTestChildren(
+        result,
+        mainAxisPosition: mainAxisPosition,
+        crossAxisPosition: crossAxisPosition,
+      );
 }
 
 class VideoPageHeroTarget extends StatefulWidget {
@@ -504,6 +715,16 @@ class _VideoPageHeroTargetState extends State<VideoPageHeroTarget> {
   }
 
   void _status(AnimationStatus status) {
+    // The shrinking opaque carrier still covers the source. Restore the live
+    // card now so it has painted before the route's last overlay is removed.
+    // A cancelled gesture covers it again while the carrier expands.
+    if (_snapshot != null) {
+      _source?.cover(
+        !_fallback &&
+            status != AnimationStatus.reverse &&
+            status != AnimationStatus.dismissed,
+      );
+    }
     if (status == AnimationStatus.completed && _route?.offstage == false) {
       _entryCompleted = true;
       _returnAnchored = false;
@@ -570,6 +791,7 @@ class _VideoPageHeroTargetState extends State<VideoPageHeroTarget> {
           final animation = _animation;
           if (animation?.status == AnimationStatus.reverse ||
               (_route?.popGestureInProgress ?? false)) {
+            _source?.cover(false);
             _anchorReturn(size);
           }
           return _VideoStage(
@@ -627,7 +849,11 @@ class _RenderVideoStage extends RenderProxyBox {
     _progress = widget.progress;
     _fallback = widget.fallback;
     _color = widget.color;
-    targets[VideoTransitionPart.title]?.markNeedsPaint();
+    for (final target in targets.values) {
+      target
+        ..markNeedsPaint()
+        ..markNeedsSemanticsUpdate();
+    }
     markNeedsPaint();
     markNeedsSemanticsUpdate();
   }
@@ -671,7 +897,22 @@ class _RenderVideoStage extends RenderProxyBox {
     if (rect.isEmpty || !rect.overlaps(Offset.zero & size)) return null;
     return (
       rect: rect,
-      baseline: _baselineOf(target),
+      baseline: part == VideoTransitionPart.title ? _baselineOf(target) : 0,
+    );
+  }
+
+  Rect? get mediaRect {
+    final source = snapshot;
+    final cover = source?.parts[VideoTransitionPart.cover];
+    final target = _target(VideoTransitionPart.cover);
+    if (source == null || cover == null || target == null) return null;
+    final shift =
+        (_sourceRect ?? source.rect).topLeft -
+        source.rect.topLeft -
+        localToGlobal(Offset.zero);
+    return geometry.mediaRect(
+      sourceCover: cover.rect.shift(shift),
+      targetCover: target.rect,
     );
   }
 
@@ -691,7 +932,7 @@ class _RenderVideoStage extends RenderProxyBox {
     if (frame.expansion < 1) {
       context.canvas.drawRect(
         offset & size,
-        Paint()..color = Colors.black.withValues(alpha: 0.16 * frame.expansion),
+        Paint()..color = Colors.black.withValues(alpha: 0.24 * frame.expansion),
       );
     }
     context.pushClipRRect(
@@ -771,20 +1012,16 @@ class _RenderVideoStage extends RenderProxyBox {
     }
     final cover = source.parts[VideoTransitionPart.cover];
     if (cover != null && frame.coverOpacity > 0) {
-      final target = _target(VideoTransitionPart.cover);
-      final from = cover.rect.shift(sourceShift);
-      final destination = target == null
-          ? inCard(cover.rect)
-          : frame.mapRect(target.rect);
-      final flight = Rect.lerp(
-        from,
-        destination,
-        (frame.expansion / 0.28).clamp(0, 1),
-      )!;
-      // Uniform width scale, cropped to the moving cover slot when necessary.
-      final imageRect =
-          flight.topLeft &
-          (cover.rect.size * (flight.width / cover.rect.width));
+      final flight = mediaRect ?? inCard(cover.rect);
+      final scale = max(
+        flight.width / cover.rect.width,
+        flight.height / cover.rect.height,
+      );
+      final imageRect = Rect.fromCenter(
+        center: flight.center,
+        width: cover.rect.width * scale,
+        height: cover.rect.height * scale,
+      );
       canvas
         ..save()
         ..clipRect(flight);
