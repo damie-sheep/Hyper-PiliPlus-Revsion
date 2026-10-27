@@ -14,6 +14,7 @@ import 'package:PiliPlus/http/browser_ua.dart';
 import 'package:PiliPlus/http/fav.dart';
 import 'package:PiliPlus/http/init.dart';
 import 'package:PiliPlus/http/loading_state.dart';
+import 'package:PiliPlus/http/search.dart';
 import 'package:PiliPlus/http/user.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/common/account_type.dart';
@@ -30,6 +31,7 @@ import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/models_new/download/bili_download_entry_info.dart';
 import 'package:PiliPlus/models_new/media_list/media_list.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_info_model/result.dart';
+import 'package:PiliPlus/models_new/pagelist/page_item.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_detail/episode.dart' as ugc;
 import 'package:PiliPlus/models_new/video/video_pbp/data.dart';
@@ -842,6 +844,29 @@ class VideoDetailController extends GetxController
     }
     isQuerying = true;
     try {
+      if (cid.value == 0 && isUgc) {
+        PageItem? page;
+        try {
+          page = await SearchHttp.ab2cWithDimension(aid: aid, bvid: bvid);
+        } catch (error) {
+          if (kDebugMode) debugPrint('CID lookup failed: $error');
+        }
+        if (isClosed) return;
+        // The detail request may have resolved the CID in parallel. Never
+        // overwrite a part selected while the lookup was in flight.
+        if (cid.value == 0 && page != null && page.cid > 0) {
+          cid.value = page.cid;
+          if (page.dimension case final dimension?) {
+            isVertical.value = dimension.isVertical;
+          }
+        }
+        if (cid.value == 0) {
+          _autoPlay.value = false;
+          videoState.value = false;
+          SmartDialog.showToast('无法获取视频分P，请重试');
+          return;
+        }
+      }
       await _queryVideoUrl(fromReset, autoFullScreenFlag);
     } finally {
       isQuerying = false;

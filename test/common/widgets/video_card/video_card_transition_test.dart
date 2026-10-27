@@ -1,503 +1,773 @@
-import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
 
-import 'package:PiliPlus/common/widgets/video_card/video_card_transition.dart';
 import 'package:PiliPlus/common/widgets/route_aware_mixin.dart';
+import 'package:PiliPlus/common/widgets/video_card/video_card_transition.dart';
+import 'package:PiliPlus/common/widgets/video_card/video_card_h.dart';
+import 'package:PiliPlus/common/widgets/video_card/video_card_v.dart';
+import 'package:PiliPlus/common/widgets/video_card/video_transition_geometry.dart';
+import 'package:PiliPlus/models/horizontal_video_model.dart';
+import 'package:PiliPlus/models/model_rec_video_item.dart';
+import 'package:PiliPlus/models/model_owner.dart';
+import 'package:PiliPlus/models/model_video.dart';
+import 'package:PiliPlus/pages/video/introduction/ugc/loading_skeleton.dart';
+import 'package:PiliPlus/utils/storage.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
+import 'package:hive_ce/hive.dart';
 import 'package:material_ui/material_ui.dart';
 
-double _pageOpacity(WidgetTester tester) =>
-    (1 -
-        tester
-            .widget<ColoredBox>(
-              find.byKey(const ValueKey('video-transition-page-veil')),
-            )
-            .color
-            .a) *
-    tester
-        .widget<FadeTransition>(
-          find.byKey(const ValueKey('video-transition-page')),
-        )
-        .opacity
-        .value;
+const _screenKey = ValueKey('screen');
+const _tag = 'transition-probe';
+const _playerKey = ValueKey('player');
+const _sourceTitleKey = ValueKey('source-title');
+const _playerColor = Color(0xff1266dd);
+const _readyColor = Color(0xff008844);
+const _sourceInk = Color(0xffff00ff);
+late _SeekableRoute _route;
+int _pageCreations = 0;
+int _controllerCreations = 0;
+int _playerTaps = 0;
+final _samplingCalls = <bool>[];
+
+double _timeFor(double expansion) {
+  var low = 0.0;
+  var high = 1.0;
+  for (var i = 0; i < 40; i++) {
+    final mid = (low + high) / 2;
+    if (Curves.easeInOutCubic.transform(mid) < expansion) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return (low + high) / 2;
+}
+
+Future<void> _seek(WidgetTester tester, double expansion) async {
+  _route.seek(_timeFor(expansion));
+  await tester.pump();
+  await tester.pump();
+}
+
+class _Pixels {
+  _Pixels(this.bytes, this.width, this.height);
+  final Uint8List bytes;
+  final int width;
+  final int height;
+  Color at(Offset point) {
+    final x = point.dx.floor().clamp(0, width - 1);
+    final y = point.dy.floor().clamp(0, height - 1);
+    final i = (y * width + x) * 4;
+    return Color.fromARGB(bytes[i + 3], bytes[i], bytes[i + 1], bytes[i + 2]);
+  }
+
+  Rect? magentaBounds() {
+    var left = width;
+    var top = height;
+    var right = -1;
+    var bottom = -1;
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        final i = (y * width + x) * 4;
+        if (bytes[i] > bytes[i + 1] + 35 && bytes[i + 2] > bytes[i + 1] + 35) {
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
+      }
+    }
+    return right < 0
+        ? null
+        : Rect.fromLTRB(left.toDouble(), top.toDouble(), right + 1, bottom + 1);
+  }
+}
+
+Future<_Pixels> _pixels(WidgetTester tester, [String? name]) async {
+  return (await tester.runAsync(() async {
+    final boundary = tester.renderObject<RenderRepaintBoundary>(
+      find.byKey(_screenKey),
+    );
+    final image = await boundary.toImage(pixelRatio: 1);
+    final bytes = (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    const directory = String.fromEnvironment('VIDEO_TRANSITION_EVIDENCE');
+    if (directory.isNotEmpty && name != null) {
+      final path = Directory(directory)..createSync(recursive: true);
+      final png = (await image.toByteData(format: ui.ImageByteFormat.png))!;
+      File('${path.path}/$name.png').writeAsBytesSync(png.buffer.asUint8List());
+    }
+    final result = _Pixels(
+      bytes.buffer.asUint8List(),
+      image.width,
+      image.height,
+    );
+    image.dispose();
+    return result;
+  }))!;
+}
+
+Future<Rect> _open(
+  WidgetTester tester, {
+  bool right = false,
+  bool nested = false,
+  ValueNotifier<bool>? loaded,
+  ValueNotifier<Color>? player,
+  ValueNotifier<bool>? sourceVisible,
+  ValueNotifier<double>? sourceTop,
+  double textScale = 1,
+  bool dark = false,
+  bool markers = true,
+}) async {
+  tester.view.physicalSize = const Size(400, 800);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await tester.pumpWidget(
+    RepaintBoundary(
+      key: _screenKey,
+      child: GetMaterialApp(
+        debugShowCheckedModeBanner: false,
+        navigatorObservers: [routeObserver],
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: Colors.blue,
+            brightness: dark ? Brightness.dark : Brightness.light,
+          ),
+          scaffoldBackgroundColor: dark
+              ? const Color(0xff121212)
+              : Colors.white,
+        ),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.linear(textScale)),
+          child: child!,
+        ),
+        home: _Source(
+          right: right,
+          nested: nested,
+          loaded: loaded,
+          player: player,
+          sourceVisible: sourceVisible,
+          sourceTop: sourceTop,
+          markers: markers,
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+  final source = tester.getRect(find.byKey(const ValueKey('card')));
+  await tester.tap(find.byKey(const ValueKey('card')));
+  await tester.pump();
+  return source;
+}
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() {
+    GStorage.setting = _MemorySettings();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('com.aritxonly.hyperpiliplus/miuix_navigation'),
+          (call) async {
+            if (call.method == 'setBackdropSamplingPaused') {
+              _samplingCalls.add(call.arguments as bool);
+            }
+            return null;
+          },
+        );
+  });
   setUp(() {
-    _PlaybackProbeController.creations = 0;
-    _ContentProbeState.creations = 0;
-    _PaintProbe.paints = 0;
+    _pageCreations = 0;
+    _controllerCreations = 0;
+    _playerTaps = 0;
+    _samplingCalls.clear();
   });
   tearDown(Get.reset);
-  predictiveBackTests();
-  interruptedEntryTests();
-  coverFlightTests();
-  testWidgets(
-    'cover gate waits for frame and dimensions, ignores stale entry',
-    (
-      tester,
-    ) async {
-      await tester.pumpWidget(const SizedBox());
-      final gate = VideoFirstFrameGate();
-      final first = Completer<void>();
-      final firstRect = ValueNotifier<Rect?>(null);
-      gate.bind(
-        identity: first,
-        firstFrame: first.future,
-        videoRect: firstRect,
-      );
-      firstRect.value = const Rect.fromLTWH(0, 0, 1920, 1080);
-      await tester.pump();
-      expect(gate.ready, isFalse);
-      final second = Completer<void>();
-      final secondRect = ValueNotifier<Rect?>(Rect.zero);
-      gate.bind(
-        identity: second,
-        firstFrame: second.future,
-        videoRect: secondRect,
-      );
-      first.complete();
-      await tester.pump();
-      expect(gate.ready, isFalse);
-      second.complete();
-      await tester.pump();
-      expect(gate.ready, isFalse);
-      secondRect.value = const Rect.fromLTWH(0, 0, 1, 1);
-      await tester.pump();
-      expect(gate.ready, isFalse);
-      secondRect.value = const Rect.fromLTWH(0, 0, 1920, 1080);
-      await tester.pump();
-      expect(gate.ready, isFalse);
-      await tester.pump(const Duration(milliseconds: 16));
-      await tester.pump(const Duration(milliseconds: 16));
-      expect(gate.ready, isTrue);
-      gate.dispose();
-      firstRect.dispose();
-      secondRect.dispose();
-    },
-  );
-  for (final cancel in [false, true]) {
+
+  for (final right in [false, true]) {
     testWidgets(
-      'entry readiness ignores offstage measurement; cancel=$cancel',
+      'painted skeleton follows expansion and contraction, right=$right',
       (tester) async {
-        await tester.pumpWidget(
-          GetMaterialApp(
-            navigatorObservers: [routeObserver],
-            home: const _SourcePage(preserveChildHeroes: false),
-          ),
-        );
-        await tester.tap(find.byKey(const ValueKey('video-card')));
-        await tester.pump();
-        bool? ready;
-        final pending = waitForVideoPageEntry('video-card-transition-test')
-            .then((value) => ready = value);
-        await tester.pump(const Duration(milliseconds: 32));
-        expect(ready, isNull);
-        expect(_pageOpacity(tester), 0);
-        expect(_PaintProbe.paints, greaterThan(0));
-        if (cancel) Navigator.of(tester.element(find.text('播放页'))).pop();
+        tester.view.physicalSize = const Size(400, 800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final source = await _open(tester, right: right);
+        for (final g in [0.10, 0.25, 0.50, 0.75, 1.0, 0.75, 0.50, 0.25, 0.10]) {
+          await _seek(tester, g);
+          final frame = VideoTransitionGeometry(
+            source: source,
+            viewport: const Size(400, 800),
+            progress: _route.animation!.value,
+          );
+          final playerRect = tester.getRect(find.byKey(_playerKey));
+          final expected = frame.mapRect(const Rect.fromLTWH(0, 24, 400, 225));
+          expect(playerRect.left, closeTo(expected.left, 0.01));
+          expect(playerRect.top, closeTo(expected.top, 0.01));
+          expect(playerRect.width, closeTo(expected.width, 0.01));
+          expect(playerRect.height, closeTo(expected.height, 0.01));
+          final shot = await _pixels(
+            tester,
+            'skeleton-${right ? "right" : "left"}-${g.toStringAsFixed(2)}',
+          );
+          // Last skeleton bar is visible inside the expanding carrier already
+          // at g=.10; testing widget presence / opacity alone cannot prove this.
+          final skeleton = find.byKey(const ValueKey('ugc-intro-skeleton'));
+          final bar = find
+              .descendant(of: skeleton, matching: find.byType(Container))
+              .last;
+          final point = tester.getCenter(bar);
+          expect(frame.container.contains(point), isTrue);
+          final color =
+              tester.widget<Container>(bar).decoration as BoxDecoration;
+          expect(shot.at(point), color.color);
+          if (g >= 0.5) {
+            expect(shot.at(playerRect.center), _playerColor);
+            expect(shot.magentaBounds(), isNull);
+          }
+        }
+        expect(_pageCreations, 1);
+        expect(_controllerCreations, 1);
+        expect(find.byType(Hero), findsNothing);
+        await _seek(tester, 1);
+        await tester.tap(find.byKey(_playerKey));
+        expect(_playerTaps, 1);
+        Navigator.of(tester.element(find.byKey(_playerKey))).pop();
         await tester.pumpAndSettle();
-        await pending;
-        expect(ready, !cancel);
-        await tester.pumpWidget(const SizedBox.shrink());
-        expect(
-          await waitForVideoPageEntry('video-card-transition-test'),
-          isTrue,
+        final returned = await _pixels(
+          tester,
+          'returned-${right ? "right" : "left"}',
         );
+        expect(returned.magentaBounds(), isNotNull);
+        expect(Get.isRegistered<_ProbeController>(), isFalse);
+        expect(tester.takeException(), isNull);
       },
     );
   }
-  for (final preserveChildHeroes in [false, true]) {
+
+  testWidgets(
+    'source title keeps its aspect and hands off by geometric midpoint',
+    (tester) async {
+      await _open(tester);
+      await _seek(tester, 0);
+      final original = (await _pixels(tester)).magentaBounds()!;
+      await _seek(tester, 0.25);
+      final enlarged = (await _pixels(
+        tester,
+        'title-quarter',
+      )).magentaBounds()!;
+      final sx = enlarged.width / original.width;
+      final sy = enlarged.height / original.height;
+      expect((sx - sy).abs(), lessThan(0.13));
+      expect(sx, inInclusiveRange(1.0, 1.4));
+      final target = find
+          .descendant(
+            of: find.byType(VideoTransitionTargetPart),
+            matching: find.text('KNOWN TITLE'),
+          )
+          .last;
+      await _seek(tester, 0.40);
+      final frame = await _pixels(tester, 'title-handoff');
+      final sourceInk = frame.magentaBounds()!;
+      final targetRect = tester.getRect(target);
+      expect((sourceInk.top - targetRect.top).abs(), lessThan(18));
+      await _seek(tester, 0.50);
+      expect((await _pixels(tester)).magentaBounds(), isNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final loadAt in [0.1, 0.4, 1.0]) {
     testWidgets(
-      'return content handoff (nested Heroes: $preserveChildHeroes)',
+      'data arriving at expansion=$loadAt preserves title and player',
       (
         tester,
       ) async {
-        await tester.pumpWidget(
-          GetMaterialApp(
-            theme: ThemeData(
-              cardColor: const Color(0xffbbaa77),
-              canvasColor: const Color(0xff223344),
-            ),
-            navigatorObservers: [routeObserver],
-            home: _SourcePage(preserveChildHeroes: preserveChildHeroes),
-          ),
-        );
-        final card = find.byKey(const ValueKey('video-card'));
-        final initial = tester.getRect(card);
-        final cardColor = Theme.of(tester.element(card)).cardColor;
-        final pageColor = Theme.of(tester.element(card)).canvasColor;
-        await tester.tap(card);
+        final player = ValueNotifier(_playerColor);
+        final loaded = ValueNotifier(false);
+        addTearDown(player.dispose);
+        addTearDown(loaded.dispose);
+        await _open(tester, loaded: loaded, player: player);
+        await _seek(tester, loadAt);
+        final titleBefore = tester.getRect(find.text('KNOWN TITLE').last);
+        player.value = _readyColor;
+        loaded.value = true;
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 16));
-        final flight = find.byKey(const ValueKey('video-transition-flight'));
-        expect(tester.getRect(flight).width, greaterThan(initial.width + 1));
-        expect(find.byType(BackdropFilter), findsNothing);
-        expect(find.byType(ImageFiltered), findsNothing);
-        expect(find.byType(SnapshotWidget), findsNothing);
-        expect(find.byType(RawImage), findsNothing);
-        expect(
-          find.byKey(const ValueKey('video-transition-dim')),
-          findsOneWidget,
-        );
-        expect(_pageOpacity(tester), 0);
-        final firstSurface = tester
-            .widget<ColoredBox>(
-              find.byKey(const ValueKey('video-transition-surface')),
-            )
-            .color;
-        expect(firstSurface, isNot(cardColor));
-        expect(firstSurface, isNot(pageColor));
-        expect(
-          tester
-              .widget<ColoredBox>(
-                find.byKey(const ValueKey('video-transition-flight-surface')),
-              )
-              .color,
-          firstSurface,
-        );
-        await tester.pump(
-          Duration(
-            milliseconds: videoPageTransitionDuration.inMilliseconds ~/ 2,
-          ),
-        );
-        expect(_pageOpacity(tester), greaterThan(0));
-        expect(_pageOpacity(tester), 1);
-        await tester.pump(videoPageTransitionDuration); // expansion complete
-        expect(_pageOpacity(tester), 1);
-        expect(
-          tester
-              .widget<ColoredBox>(
-                find.byKey(const ValueKey('video-transition-surface')),
-              )
-              .color,
-          pageColor,
-        );
-        await tester.pumpAndSettle();
-        expect(
-          find.byKey(const ValueKey('video-transition-dim')),
-          findsNothing,
-        );
-        expect(Get.routing.route, isA<GetPageRoute>());
-        expect(Get.currentRoute, '/videoV');
-        expect(Get.arguments['heroTag'], 'video-card-transition-test');
-        expect(Get.isRegistered<_PlaybackProbeController>(), isTrue);
-        expect(_PlaybackProbeController.creations, 1);
-        expect(_ContentProbeState.creations, 1);
-        final page = find.byKey(
-          const ValueKey('video-transition-page-container'),
-        );
-        final full = tester.getRect(page);
-        Navigator.of(tester.element(find.text('播放页'))).pop();
-        await tester.pump();
-        var previous = full;
-        var previousOpacity = 1.0;
-        final reverseStep = Duration(
-          milliseconds:
-              (videoPageReverseTransitionDuration.inMilliseconds - 24) ~/ 8,
-        );
-        for (var step = 1; step <= 9; step++) {
-          await tester.pump(
-            step == 1 ? const Duration(milliseconds: 16) : reverseStep,
-          );
-          final rect = tester.getRect(page);
-          expect(rect.width, lessThan(previous.width));
-          expect(rect.height, lessThan(previous.height));
-          final opacity = _pageOpacity(tester);
-          expect(opacity, lessThan(previousOpacity));
-          final contraction =
-              (full.width - rect.width) / (full.width - initial.width);
-          expect(
-            opacity,
-            closeTo(1 - Curves.easeOutCubic.transform(contraction), 0.001),
-          );
-          if (contraction >= 0.5) expect(opacity, lessThan(0.15));
-          expect(
-            tester
-                .widget<ColoredBox>(
-                  find.byKey(const ValueKey('video-transition-surface')),
-                )
-                .color
-                .toARGB32(),
-            Color.lerp(cardColor, pageColor, 1 - contraction)!.toARGB32(),
-          );
-          previousOpacity = opacity;
-          expect(
-            find.byKey(const ValueKey('video-transition-dim')),
-            findsNothing,
-          );
-          expect(find.byType(BackdropFilter), findsNothing);
-          expect(find.byType(ImageFiltered), findsNothing);
-          expect(
-            find.byKey(const ValueKey('video-transition-flight')),
-            findsNothing,
-          );
-          final returnCard = find.byKey(
-            const ValueKey('video-transition-return-card'),
-          );
-          final returnRect = tester.getRect(returnCard);
-          expect(returnRect.left, closeTo(rect.left, 0.001));
-          expect(returnRect.top, closeTo(rect.top, 0.001));
-          expect(returnRect.width, closeTo(rect.width, 0.001));
-          expect(returnRect.height, closeTo(rect.height, 0.001));
-          final cardOpacity = tester
-              .widget<Opacity>(
-                find.byKey(
-                  const ValueKey('video-transition-return-card-opacity'),
-                ),
-              )
-              .opacity;
-          expect(cardOpacity + opacity, closeTo(1, 0.001));
-          if (contraction >= 0.5) expect(cardOpacity, greaterThan(0.85));
-          expect(
-            find.descendant(
-              of: returnCard,
-              matching: find.byKey(const ValueKey('video-card')),
-            ),
-            findsOneWidget,
-          );
-          expect(_PlaybackProbeController.creations, 1);
-          expect(_ContentProbeState.creations, 1);
-          expect(tester.takeException(), isNull);
-          previous = rect;
-        }
-        expect(previous.center.dx, closeTo(initial.center.dx, 1));
-        expect(previous.width, closeTo(initial.width, 5));
-        await tester.pumpAndSettle();
-        expect(card, findsOneWidget);
-        expect(Get.isRegistered<_PlaybackProbeController>(), isFalse);
+        final titleAfter = tester.getRect(find.text('KNOWN TITLE').last);
+        expect(titleAfter.top, closeTo(titleBefore.top, 0.01));
+        expect(titleAfter.size, titleBefore.size);
+        if (loadAt < 0.4) await _seek(tester, 0.4);
+        final image = await _pixels(tester, 'ready-at-$loadAt');
+        expect(image.at(tester.getCenter(find.byKey(_playerKey))), _readyColor);
+        expect(_pageCreations, 1);
+        expect(_controllerCreations, 1);
       },
     );
   }
-  testWidgets('content preparation starts before the entry settles', (
+
+  for (final delay in [16, 120, 280, 600]) {
+    for (final nested in [false, true]) {
+      testWidgets('quick return at ${delay}ms, nested image Hero=$nested', (
+        tester,
+      ) async {
+        final source = await _open(tester, nested: nested);
+        await tester.pump(Duration(milliseconds: delay));
+        var previous = tester.getRect(find.byKey(_playerKey));
+        _route.navigator!.pop();
+        await tester.pump();
+        for (var i = 0; i < 30 && _route.isActive; i++) {
+          await tester.pump(const Duration(milliseconds: 16));
+          if (!_route.isActive) break;
+          final current = tester.getRect(find.byKey(_playerKey));
+          expect(current.width, lessThanOrEqualTo(previous.width + 0.01));
+          expect(current.height, lessThanOrEqualTo(previous.height + 0.01));
+          previous = current;
+        }
+        await tester.pumpAndSettle();
+        expect(tester.getRect(find.byKey(const ValueKey('card'))), source);
+        expect(Get.isRegistered<_ProbeController>(), isFalse);
+        expect(_pageCreations, 1);
+        expect(_controllerCreations, 1);
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
+  for (final cancel in [false, true]) {
+    testWidgets(
+      'predictive back continues from current geometry, cancel=$cancel',
+      (tester) async {
+        await _open(tester);
+        await tester.pumpAndSettle();
+        final full = tester.getRect(find.byKey(_playerKey));
+        final navigator = _route.navigator!;
+        _route
+          ..handleStartBackGesture(progress: 1)
+          ..handleUpdateBackGestureProgress(progress: 0.55);
+        await tester.pump();
+        final dragged = tester.getRect(find.byKey(_playerKey));
+        expect(dragged.width, lessThan(full.width));
+        if (cancel) {
+          _route.handleCancelBackGesture();
+          await tester.pumpAndSettle();
+          expect(tester.getRect(find.byKey(_playerKey)), full);
+          expect(navigator.userGestureInProgress, isFalse);
+          _route
+            ..handleStartBackGesture(progress: 1)
+            ..handleUpdateBackGestureProgress(progress: 0.55);
+          await tester.pump();
+        }
+        _route.handleCommitBackGesture();
+        expect(_route.animation!.value, closeTo(0.55, 0.001));
+        _route.handleCommitBackGesture();
+        await tester.pump();
+        var width = dragged.width;
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 20));
+          final next = tester.getRect(find.byKey(_playerKey)).width;
+          expect(next, lessThanOrEqualTo(width + 0.01));
+          width = next;
+        }
+        await tester.pumpAndSettle();
+        expect(navigator.userGestureInProgress, isFalse);
+        expect(Get.isRegistered<_ProbeController>(), isFalse);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('missing source falls back without a stale shrinking target', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      GetMaterialApp(
-        navigatorObservers: [routeObserver],
-        home: const _SourcePage(preserveChildHeroes: false),
-      ),
-    );
-    await tester.tap(find.byKey(const ValueKey('video-card')));
-    await tester.pump();
-    bool? ready;
-    final pending = waitForVideoPageEntry('video-card-transition-test').then(
-      (value) => ready = value,
-    );
-    await tester.pump(const Duration(milliseconds: 70));
-    await tester.pump();
-    final route = Get.routing.route as VideoPageTransitionRoute<void>;
-    expect(ready, isTrue);
-    expect(route.animation!.value, lessThan(1));
+    final sourceVisible = ValueNotifier(true);
+    addTearDown(sourceVisible.dispose);
+    await _open(tester, sourceVisible: sourceVisible);
     await tester.pumpAndSettle();
-    await pending;
+    sourceVisible.value = false;
+    await tester.pump();
+    final full = tester.getRect(find.byKey(_playerKey));
+    _route.navigator!.pop();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.getRect(find.byKey(_playerKey)), full);
+    await tester.pumpAndSettle();
+    expect(Get.isRegistered<_ProbeController>(), isFalse);
+    expect(tester.takeException(), isNull);
   });
-  testWidgets('page UI is visible around the middle of card expansion', (
+
+  for (final cancel in [false, true]) {
+    testWidgets('media readiness uses real route progress, cancel=$cancel', (
+      tester,
+    ) async {
+      await _open(tester, nested: true);
+      bool? ready;
+      final pending = waitForVideoPageEntry(_tag)
+          .then((value) => ready = value);
+      await tester.pump(const Duration(milliseconds: 32));
+      expect(ready, isNull);
+      if (cancel) _route.navigator!.pop();
+      await tester.pumpAndSettle();
+      await pending;
+      expect(ready, !cancel);
+      await tester.pumpWidget(const SizedBox());
+      expect(await waitForVideoPageEntry(_tag), isTrue);
+    });
+  }
+
+  testWidgets('large text retains uniform geometry and usable player', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      GetMaterialApp(
-        navigatorObservers: [routeObserver],
-        home: const _SourcePage(preserveChildHeroes: false),
-      ),
-    );
-    await tester.tap(find.byKey(const ValueKey('video-card')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 410));
-    final route = Get.routing.route as VideoPageTransitionRoute<void>;
-    expect(_pageOpacity(tester), 1);
-    expect(route.animation!.value, lessThan(1));
-    await tester.pumpAndSettle();
+    await _open(tester, textScale: 2);
+    await _seek(tester, 0.25);
+    expect((await _pixels(tester)).magentaBounds(), isNotNull);
+    await _seek(tester, 1);
+    await tester.tap(find.byKey(_playerKey));
+    expect(_playerTaps, 1);
+    expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'dark page, moving hit targets and early playback have no cover obstruction',
+    (tester) async {
+      await _open(tester, dark: true);
+      await _seek(tester, 0.75);
+      final image = await _pixels(tester, 'dark-three-quarters');
+      final center = tester.getCenter(find.byKey(_playerKey));
+      expect(image.at(center), _playerColor);
+      await tester.tapAt(center);
+      expect(_playerTaps, 1);
+      _route.navigator!.pop();
+      await tester.pumpAndSettle();
+      expect(_samplingCalls.first, isTrue);
+      expect(_samplingCalls.last, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('return title and cover use the updated source position', (
+    tester,
+  ) async {
+    final top = ValueNotifier(340.0);
+    addTearDown(top.dispose);
+    await _open(tester, sourceTop: top);
+    await tester.pumpAndSettle();
+    top.value = 400;
+    await tester.pump();
+    _route.navigator!.pop();
+    await tester.pump();
+    await _seek(tester, 0.05);
+    final image = await _pixels(tester, 'return-moved-source');
+    expect(image.magentaBounds()!.top, greaterThan(480));
+    _route.seek(0);
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(find.byKey(const ValueKey('card'))).dy, 400);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('generic dynamic/history carrier preserves nested image Heroes', (
+    tester,
+  ) async {
+    await _open(tester, nested: true, markers: false);
+    await _seek(tester, 0.25);
+    final quarter = tester.getRect(find.byKey(_playerKey)).width;
+    expect(find.byType(Hero), findsOneWidget);
+    await _seek(tester, 1);
+    expect(tester.getRect(find.byKey(_playerKey)).width, greaterThan(quarter));
+    _route.navigator!.pop();
+    await tester.pumpAndSettle();
+    expect(find.byType(Hero), findsOneWidget);
+    expect(_controllerCreations, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'orientation changes retain the page and use a full-page return fallback',
+    (tester) async {
+      await _open(tester);
+      await tester.pumpAndSettle();
+      tester.view.physicalSize = const Size(800, 400);
+      await tester.pump();
+      final full = tester.getRect(find.byKey(_playerKey));
+      _route.navigator!.pop();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.getRect(find.byKey(_playerKey)), full);
+      await tester.pumpAndSettle();
+      expect(_pageCreations, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final horizontal in [false, true]) {
+    for (final scale in [1.0, 1.6]) {
+      testWidgets(
+        'actual card captures its painted parts: horizontal=$horizontal, scale=$scale',
+        (tester) async {
+          await tester.pumpWidget(
+            GetMaterialApp(
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context)
+                    .copyWith(textScaler: TextScaler.linear(scale)),
+                child: child!,
+              ),
+              home: Scaffold(
+                body: Center(
+                  child: SizedBox(
+                    width: horizontal ? 376 : 180,
+                    height: horizontal ? 130 : 260,
+                    child: horizontal
+                        ? VideoCardH(videoItem: _HorizontalItem())
+                        : VideoCardV(
+                            videoItem: RcmdVideoItemModel.fromJson({
+                              'id': 1,
+                              'bvid': 'BV-test',
+                              'cid': 1,
+                              'goto': 'av',
+                              'title': 'A long actual card title that wraps',
+                              'duration': 60,
+                              'pubdate': 1,
+                              'owner': {'mid': 1, 'name': 'AUTHOR'},
+                              'stat': {'view': 1, 'danmaku': 1},
+                            }),
+                          ),
+                  ),
+                ),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          final card = find.byType(VideoCardHero);
+          final parts = tester.widgetList<VideoTransitionSourcePart>(
+            find.byType(VideoTransitionSourcePart),
+          );
+          expect(
+            parts.map((part) => part.part),
+            containsAll([VideoTransitionPart.cover, VideoTransitionPart.title]),
+          );
+          final tag = tester.widget<VideoCardHero>(card).tag;
+          final gesture = await tester.startGesture(tester.getCenter(card));
+          expect(hasPendingVideoCardTransition(tag), isTrue);
+          _route = _SeekableRoute(
+            tag: tag,
+            builder: (_) => _Details(tag: tag),
+          );
+          Navigator.of(tester.element(card)).push(_route);
+          await gesture.cancel();
+          await tester.pump();
+          await _seek(tester, 0.25);
+          final quarter = tester.getRect(find.byKey(_playerKey));
+          await _seek(tester, 1);
+          expect(
+            tester.getRect(find.byKey(_playerKey)).width,
+            greaterThan(quarter.width),
+          );
+          _route.navigator!.pop();
+          await tester.pumpAndSettle();
+          expect(find.byType(VideoCardHero), findsOneWidget);
+          expect(Get.isRegistered<_ProbeController>(), isFalse);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
 }
 
-void coverFlightTests() {
-  testWidgets('cover uses its painted card rect and the player rect', (
-    tester,
-  ) async {
-    await tester.pumpWidget(const GetMaterialApp(home: _CoverSourcePage()));
-    final source = tester.getRect(find.byKey(const ValueKey('source-cover')));
-    final card = tester.getRect(find.byKey(const ValueKey('cover-card')));
-    expect(source, isNot(card));
-    await tester.tap(find.byKey(const ValueKey('cover-card')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 16));
-    final flight = find.byKey(const ValueKey('video-cover-flight'));
-    expect(flight, findsOneWidget);
-    final early = tester.getRect(flight);
-    expect(early.left, closeTo(source.left, 8));
-    expect(early.top, closeTo(source.top, 8));
-    expect(
-      find.descendant(
-        of: flight,
-        matching: find.byWidgetPredicate(
-          (widget) => widget is ColoredBox && widget.color == Colors.orange,
+class _SeekableRoute extends VideoPageTransitionRoute<void> {
+  _SeekableRoute({required super.builder, Object tag = _tag})
+    : super(
+        settings: RouteSettings(
+          name: '/transition-probe',
+          arguments: {'heroTag': tag},
         ),
-      ),
-      findsOneWidget,
-    );
-    await tester.pump(const Duration(milliseconds: 320));
-    final middle = tester.getRect(flight);
-    expect(
-      tester
-          .widget<Opacity>(
-            find.byKey(const ValueKey('video-cover-flight-opacity')),
-          )
-          .opacity,
-      0,
-    );
-    expect(middle.width, greaterThan(early.width));
-    expect(middle.left, lessThan(early.left));
-    await tester.pumpAndSettle();
-    final player = tester.getRect(find.byKey(const ValueKey('player-cover')));
-    expect(player, const Rect.fromLTWH(32, 80, 320, 180));
-    expect(flight, findsNothing);
-    final route = Get.routing.route as VideoPageTransitionRoute<void>;
-    // ignore: cascade_invocations
-    route
-      ..handleStartBackGesture(progress: 1)
-      ..handleUpdateBackGestureProgress(progress: 0.5);
-    await tester.pump();
-    expect(flight, findsOneWidget);
-    route.handleCancelBackGesture();
-    await tester.pumpAndSettle();
-    expect(tester.getRect(find.byKey(const ValueKey('player-cover'))), player);
-    route
-      ..handleStartBackGesture(progress: 1)
-      ..handleUpdateBackGestureProgress(progress: 0.5);
-    await tester.pump();
-    route.handleCommitBackGesture();
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('source-cover')), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('cover-card')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('player-cover')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('cover flight reverses during unfinished entry', (tester) async {
-    await tester.pumpWidget(const GetMaterialApp(home: _CoverSourcePage()));
-    await tester.tap(find.byKey(const ValueKey('cover-card')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 120));
-    final flight = find.byKey(const ValueKey('video-cover-flight'));
-    final enlarged = tester.getRect(flight);
-    Navigator.of(tester.element(find.byType(_CoverTargetPage))).pop();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(tester.getRect(flight).width, lessThan(enlarged.width));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('source-cover')), findsOneWidget);
-    expect(flight, findsNothing);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('late content follows player and introduction', (tester) async {
-    await tester.pumpWidget(const GetMaterialApp(home: _CoverSourcePage()));
-    await tester.tap(find.byKey(const ValueKey('cover-card')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    final late = tester.widget<Opacity>(
-      find.byKey(const ValueKey('video-transition-late-content')),
-    );
-    expect(_pageOpacity(tester), 1);
-    expect(late.opacity, lessThan(0.5));
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(
-      tester
-          .widget<Opacity>(
-            find.byKey(const ValueKey('video-transition-late-content')),
-          )
-          .opacity,
-      greaterThan(late.opacity),
-    );
-    await tester.pumpAndSettle();
-  });
+      );
+  void seek(double value) {
+    controller!
+      ..stop()
+      ..value = value;
+  }
 }
 
-class _CoverSourcePage extends StatelessWidget {
-  const _CoverSourcePage();
+class _Source extends StatelessWidget {
+  const _Source({
+    required this.right,
+    required this.nested,
+    this.loaded,
+    this.player,
+    this.sourceVisible,
+    this.sourceTop,
+    this.markers = true,
+  });
+  final bool right;
+  final bool nested;
+  final ValueNotifier<bool>? loaded;
+  final ValueNotifier<Color>? player;
+  final ValueNotifier<bool>? sourceVisible;
+  final ValueNotifier<double>? sourceTop;
+  final bool markers;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    body: Center(
-      child: GestureDetector(
-        key: const ValueKey('cover-card'),
-        onTap: () => Navigator.of(context).push(
-          VideoPageTransitionRoute<void>(
-            settings: const RouteSettings(
-              name: '/videoV',
-              arguments: {'heroTag': 'cover-geometry'},
-            ),
-            builder: (_) => const _CoverTargetPage(),
-          ),
-        ),
-        child: VideoCardHero(
-          tag: 'cover-geometry',
-          surfaceColor: Theme.of(context).cardColor,
-          preserveChildHeroes: true,
-          surfaceOnlyFlight: true,
-          child: const SizedBox(
-            width: 200,
-            height: 140,
-            child: Stack(
+  Widget build(BuildContext context) {
+    Widget mark(VideoTransitionPart part, Widget child) =>
+        markers ? VideoTransitionSourcePart(part: part, child: child) : child;
+    final card = SizedBox(
+      key: const ValueKey('card'),
+      width: 160,
+      height: 184,
+      child: VideoCardHero(
+        tag: _tag,
+        surfaceColor: Colors.white,
+        child: GestureDetector(
+          onTap: () {
+            _route = _SeekableRoute(
+              builder: (_) => _Details(loaded: loaded, player: player),
+            );
+            Navigator.of(context).push(_route);
+          },
+          child: ColoredBox(
+            color: Colors.white,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Positioned.fill(child: ColoredBox(color: Colors.grey)),
-                Positioned(
-                  left: 15,
-                  top: 22,
-                  width: 120,
-                  height: 70,
-                  child: VideoCoverHero(
-                    tag: 'cover-geometry',
-                    child: ColoredBox(
-                      key: ValueKey('source-cover'),
-                      color: Colors.orange,
+                mark(
+                  VideoTransitionPart.cover,
+                  const SizedBox(
+                    width: 160,
+                    height: 90,
+                    child: ColoredBox(color: Colors.orange),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: mark(
+                    VideoTransitionPart.title,
+                    const Text(
+                      'SOURCE TITLE',
+                      key: _sourceTitleKey,
+                      maxLines: 2,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontFamily: 'Ahem',
+                        color: _sourceInk,
+                      ),
                     ),
                   ),
                 ),
+                if (nested)
+                  const Hero(
+                    tag: 'image-preview',
+                    child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: ColoredBox(color: Colors.teal),
+                    ),
+                  ),
               ],
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+    Widget positioned(double top) => Positioned(
+      left: right ? 220 : 20,
+      top: top,
+      child: sourceVisible == null
+          ? card
+          : ValueListenableBuilder<bool>(
+              valueListenable: sourceVisible!,
+              builder: (_, visible, _) => visible ? card : const SizedBox(),
+            ),
+    );
+    return Scaffold(
+      backgroundColor: const Color(0xffcccccc),
+      body: Stack(
+        children: [
+          if (sourceTop == null)
+            positioned(340)
+          else
+            ValueListenableBuilder<double>(
+              valueListenable: sourceTop!,
+              builder: (_, top, _) => positioned(top),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
-class _CoverTargetPage extends StatelessWidget {
-  const _CoverTargetPage();
+class _Details extends StatefulWidget {
+  const _Details({this.loaded, this.player, this.tag = _tag});
+  final Object tag;
+  final ValueNotifier<bool>? loaded;
+  final ValueNotifier<Color>? player;
+  @override
+  State<_Details> createState() => _DetailsState();
+}
+
+class _DetailsState extends State<_Details> with RouteAware, RouteAwareMixin {
+  @override
+  void initState() {
+    super.initState();
+    _pageCreations++;
+    Get.put(_ProbeController());
+  }
+
+  Widget header(bool loaded) => loaded
+      ? const UgcIntroHeader(
+          owner: ColoredBox(color: Colors.teal),
+          title: Text('KNOWN TITLE', style: TextStyle(fontSize: 16)),
+        )
+      : const UgcIntroLoadingSkeleton(title: 'KNOWN TITLE');
 
   @override
   Widget build(BuildContext context) => VideoPageHeroTarget(
-    tag: 'cover-geometry',
-    surfaceColor: Theme.of(context).canvasColor,
-    child: const Scaffold(
+    tag: widget.tag,
+    surfaceColor: Theme.of(context).scaffoldBackgroundColor,
+    child: Scaffold(
       body: Stack(
         children: [
           Positioned(
-            left: 32,
-            top: 80,
-            width: 320,
-            height: 180,
-            child: VideoCoverHero(
-              tag: 'cover-geometry',
+            left: 0,
+            top: 24,
+            width: 400,
+            height: 225,
+            child: VideoTransitionTargetPart(
+              part: VideoTransitionPart.cover,
+              child: GestureDetector(
+                key: _playerKey,
+                onTap: () => _playerTaps++,
+                child: widget.player == null
+                    ? const ColoredBox(color: _playerColor)
+                    : ValueListenableBuilder<Color>(
+                        valueListenable: widget.player!,
+                        builder: (_, color, _) => ColoredBox(color: color),
+                      ),
+              ),
+            ),
+          ),
+          const Positioned(
+            left: 0,
+            right: 0,
+            top: 249,
+            height: 36,
+            child: VideoTransitionTargetPart(
+              part: VideoTransitionPart.tabs,
               child: ColoredBox(
-                key: ValueKey('player-cover'),
-                color: Colors.blue,
+                color: Colors.cyan,
+                child: Text('INTRO / COMMENTS'),
               ),
             ),
           ),
           Positioned(
-            left: 16,
-            top: 280,
-            child: Text('视频简介'),
-          ),
-          Positioned(
-            left: 16,
-            top: 340,
-            child: VideoTransitionLayer(
-              child: Text('评论和推荐'),
-            ),
+            left: 12,
+            right: 12,
+            top: 300,
+            child: widget.loaded == null
+                ? header(false)
+                : ValueListenableBuilder<bool>(
+                    valueListenable: widget.loaded!,
+                    builder: (_, loaded, _) => header(loaded),
+                  ),
           ),
         ],
       ),
@@ -505,229 +775,29 @@ class _CoverTargetPage extends StatelessWidget {
   );
 }
 
-void interruptedEntryTests() {
-  for (final delay in [
-    16,
-    120,
-    280,
-    videoPageTransitionDuration.inMilliseconds - 80,
-  ]) {
-    for (final nested in [false, true]) {
-      testWidgets('return during entry at ${delay}ms (nested: $nested)', (
-        tester,
-      ) async {
-        await tester.pumpWidget(
-          GetMaterialApp(
-            navigatorObservers: [routeObserver],
-            home: _SourcePage(preserveChildHeroes: nested),
-          ),
-        );
-        await tester.tap(find.byKey(const ValueKey('video-card')));
-        await tester.pump();
-        await tester.pump(Duration(milliseconds: delay));
-        final route = Get.routing.route as VideoPageTransitionRoute<void>;
-        final flight = find.byKey(const ValueKey('video-transition-flight'));
-        final page = find.byKey(
-          const ValueKey('video-transition-page-container'),
-        );
-        var previous = tester.getRect(flight);
-        var previousOpacity = _pageOpacity(tester);
-        route.navigator!.pop();
-        await tester.pump();
-        while (flight.evaluate().isNotEmpty) {
-          final rect = tester.getRect(flight);
-          expect(rect.width, lessThanOrEqualTo(previous.width + 0.001));
-          expect(rect.height, lessThanOrEqualTo(previous.height + 0.001));
-          final clip = tester
-              .widget<ClipRRect>(page)
-              .clipper!
-              .getClip(tester.getSize(page))
-              .outerRect
-              .shift(tester.getTopLeft(page));
-          expect(clip.left, closeTo(rect.left, 0.001));
-          expect(clip.top, closeTo(rect.top, 0.001));
-          expect(clip.width, closeTo(rect.width, 0.001));
-          expect(clip.height, closeTo(rect.height, 0.001));
-          expect(_pageOpacity(tester), lessThanOrEqualTo(previousOpacity));
-          expect(
-            find.byKey(const ValueKey('video-transition-return-card')),
-            findsNothing,
-          );
-          expect(
-            find.byKey(const ValueKey('video-transition-dim')),
-            findsNothing,
-          );
-          previous = rect;
-          previousOpacity = _pageOpacity(tester);
-          await tester.pump(const Duration(milliseconds: 16));
-        }
-        await tester.pumpAndSettle();
-        expect(Get.isRegistered<_PlaybackProbeController>(), isFalse);
-        expect(find.byKey(const ValueKey('video-card')), findsOneWidget);
-        expect(tester.takeException(), isNull);
-      });
-    }
+class _ProbeController extends GetxController {
+  _ProbeController() {
+    _controllerCreations++;
   }
 }
 
-void predictiveBackTests() {
-  for (final cancel in [false, true]) {
-    testWidgets('predictive back continues once (cancel: $cancel)', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        GetMaterialApp(
-          navigatorObservers: [routeObserver],
-          home: const _SourcePage(preserveChildHeroes: false),
-        ),
-      );
-      await tester.tap(find.byKey(const ValueKey('video-card')));
-      await tester.pumpAndSettle();
-      final route = Get.routing.route as VideoPageTransitionRoute<void>;
-      final owner = route.navigator!;
-      final page = find.byKey(
-        const ValueKey('video-transition-page-container'),
-      );
-      final full = tester.getRect(page);
-      route
-        ..handleStartBackGesture(progress: 1)
-        ..handleUpdateBackGestureProgress(progress: 0.55);
-      await tester.pump();
-      final dragged = tester.getRect(page);
-      expect(dragged.width, lessThan(full.width));
-      expect(find.byKey(const ValueKey('video-transition-dim')), findsNothing);
-      if (cancel) {
-        route.handleCancelBackGesture();
-        await tester.pumpAndSettle();
-        expect(route.isCurrent, isTrue);
-        expect(owner.userGestureInProgress, isFalse);
-        expect(tester.getRect(page), full);
-        expect(_pageOpacity(tester), 1);
-        // Cancelling must not prevent a later, successful gesture.
-        route
-          ..handleStartBackGesture(progress: 1)
-          ..handleUpdateBackGestureProgress(progress: 0.55);
-        await tester.pump();
-      }
-      route.handleCommitBackGesture();
-      expect(route.animation!.value, closeTo(0.55, 0.001));
-      route.handleCommitBackGesture(); // repeated platform callback is ignored
-      await tester.pump();
-      var previousWidth = dragged.width;
-      for (var i = 0; i < 5; i++) {
-        await tester.pump(const Duration(milliseconds: 30));
-        final width = tester.getRect(page).width;
-        expect(width, lessThanOrEqualTo(previousWidth));
-        previousWidth = width;
-      }
-      await tester.pumpAndSettle();
-      expect(owner.userGestureInProgress, isFalse);
-      expect(find.byKey(const ValueKey('video-card')), findsOneWidget);
-      expect(Get.isRegistered<_PlaybackProbeController>(), isFalse);
-      expect(tester.takeException(), isNull);
-    });
+class _MemorySettings extends Fake implements Box<dynamic> {
+  @override
+  dynamic get(dynamic key, {dynamic defaultValue}) => defaultValue;
+}
+
+class _HorizontalItem extends HorizontalVideoModel {
+  _HorizontalItem() {
+    aid = cid = 1;
+    bvid = 'BV-test';
+    title = 'MATCH highlighted actual horizontal title';
+    titleList = [
+      (isEm: true, text: 'MATCH '),
+      (isEm: false, text: 'highlighted actual horizontal title'),
+    ];
+    owner = Owner.fromJson({'mid': 1, 'name': 'AUTHOR'});
+    stat = Stat.fromJson({'view': 1, 'danmaku': 1});
+    pubdate = 1;
+    duration = 60;
   }
-}
-
-class _SourcePage extends StatelessWidget {
-  const _SourcePage({required this.preserveChildHeroes});
-  final bool preserveChildHeroes;
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    body: Center(
-      child: VideoCardHero(
-        tag: 'video-card-transition-test',
-        surfaceColor: Theme.of(context).cardColor,
-        preserveChildHeroes: preserveChildHeroes,
-        child: InkWell(
-          key: const ValueKey('video-card'),
-          onTap: () => Navigator.of(context).push(
-            VideoPageTransitionRoute<void>(
-              settings: const RouteSettings(
-                name: '/videoV',
-                arguments: {'heroTag': 'video-card-transition-test'},
-              ),
-              builder: (_) => const _TargetPage(),
-            ),
-          ),
-          child: SizedBox(
-            width: 180,
-            height: 120,
-            child: preserveChildHeroes
-                ? const Hero(
-                    tag: 'nested-image',
-                    child: ColoredBox(color: Colors.blue),
-                  )
-                : const ColoredBox(color: Colors.blue),
-          ),
-        ),
-      ),
-    ),
-  );
-}
-
-class _TargetPage extends StatefulWidget {
-  const _TargetPage();
-  @override
-  State<_TargetPage> createState() => _TargetPageState();
-}
-
-class _TargetPageState extends State<_TargetPage>
-    with RouteAware, RouteAwareMixin {
-  @override
-  void initState() {
-    super.initState();
-    Get.put(_PlaybackProbeController());
-  }
-
-  @override
-  Widget build(BuildContext context) => VideoPageHeroTarget(
-    tag: 'video-card-transition-test',
-    surfaceColor: Theme.of(context).canvasColor,
-    child: const _ContentProbe(),
-  );
-}
-
-class _PlaybackProbeController extends GetxController {
-  _PlaybackProbeController() {
-    creations++;
-  }
-  static int creations = 0;
-}
-
-class _ContentProbe extends StatefulWidget {
-  const _ContentProbe();
-
-  @override
-  State<_ContentProbe> createState() => _ContentProbeState();
-}
-
-class _ContentProbeState extends State<_ContentProbe> {
-  static int creations = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    creations++;
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    body: CustomPaint(
-      painter: _PaintProbe(),
-      child: const Center(child: Text('播放页')),
-    ),
-  );
-}
-
-class _PaintProbe extends CustomPainter {
-  static int paints = 0;
-  @override
-  void paint(Canvas canvas, Size size) {
-    paints++;
-  }
-
-  @override
-  bool shouldRepaint(_PaintProbe oldDelegate) => false;
 }

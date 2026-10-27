@@ -140,7 +140,6 @@ class DynamicPanel extends StatelessWidget {
         child: VideoCardHero(
           tag: heroTag!,
           surfaceColor: theme.colorScheme.surfaceContainer,
-          preserveChildHeroes: true,
           child: child,
         ),
       );

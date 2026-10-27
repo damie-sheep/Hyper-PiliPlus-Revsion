@@ -5,10 +5,8 @@ import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/common/widgets/stat/stat.dart';
 import 'package:PiliPlus/common/widgets/video_popup_menu.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_card_transition.dart';
-import 'package:PiliPlus/http/search.dart';
 import 'package:PiliPlus/models/home/rcmd/result.dart';
 import 'package:PiliPlus/models/model_rec_video_item.dart';
-import 'package:PiliPlus/models_new/video/video_detail/dimension.dart';
 import 'package:PiliPlus/utils/app_scheme.dart';
 import 'package:PiliPlus/utils/date_utils.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
@@ -70,33 +68,21 @@ class _VideoCardVState extends State<VideoCardV> {
         break;
       case 'av':
         var bvid = videoItem.bvid ?? IdUtils.av2bv(videoItem.aid!);
-        var cid = videoItem.cid;
         bool isVertical = false;
-        Dimension? dimension;
         if (videoItem is RcmdVideoItemAppModel) {
           if (videoItem.uri case final uri?) {
             isVertical = uri.isVerticalFromUri;
           }
         }
-        if (cid == null) {
-          if (await SearchHttp.ab2cWithDimension(aid: videoItem.aid, bvid: bvid)
-              case final res?) {
-            cid = res.cid;
-            dimension = res.dimension;
-          }
-        }
-        if (cid != null) {
-          PageUtils.toVideoPage(
-            aid: videoItem.aid,
-            bvid: bvid,
-            cid: cid,
-            cover: videoItem.cover,
-            title: videoItem.title,
-            isVertical: isVertical,
-            dimension: dimension,
-            heroTag: _heroTag,
-          );
-        }
+        PageUtils.toVideoPage(
+          aid: videoItem.aid,
+          bvid: bvid,
+          cid: videoItem.cid ?? 0,
+          cover: videoItem.cover,
+          title: videoItem.title,
+          isVertical: isVertical,
+          heroTag: _heroTag,
+        );
         break;
       // 动态
       case 'picture':
@@ -126,8 +112,6 @@ class _VideoCardVState extends State<VideoCardV> {
         VideoCardHero(
           tag: _heroTag,
           surfaceColor: Theme.of(context).colorScheme.surfaceContainer,
-          preserveChildHeroes: true,
-          surfaceOnlyFlight: true,
           child: Card(
             margin: .zero,
             color: Theme.of(context).colorScheme.surfaceContainer,
@@ -148,11 +132,8 @@ class _VideoCardVState extends State<VideoCardV> {
                         return Stack(
                           clipBehavior: Clip.none,
                           children: [
-                            VideoCoverHero(
-                              tag: _heroTag,
-                              borderRadius: const .vertical(
-                                top: .circular(12),
-                              ),
+                            VideoTransitionSourcePart(
+                              part: VideoTransitionPart.cover,
                               child: NetworkImgLayer(
                                 src: videoItem.cover,
                                 width: maxWidth,
@@ -214,11 +195,14 @@ class _VideoCardVState extends State<VideoCardV> {
           crossAxisAlignment: .start,
           children: [
             Expanded(
-              child: Text(
-                videoItem.title,
-                maxLines: 2,
-                overflow: .ellipsis,
-                style: const TextStyle(height: 1.38),
+              child: VideoTransitionSourcePart(
+                part: VideoTransitionPart.title,
+                child: Text(
+                  videoItem.title,
+                  maxLines: 2,
+                  overflow: .ellipsis,
+                  style: const TextStyle(height: 1.38),
+                ),
               ),
             ),
             videoStat(theme),
@@ -293,18 +277,24 @@ class _VideoCardVState extends State<VideoCardV> {
           ),
         ],
         if (videoItem is RcmdVideoItemModel) ...[
-          const Spacer(),
-          Text.rich(
-            maxLines: 1,
-            TextSpan(
-              style: TextStyle(
-                fontSize: theme.textTheme.labelSmall!.fontSize,
-                color: theme.colorScheme.outline.withValues(alpha: 0.8),
-              ),
-              text: DateFormatUtils.dateFormat(
-                videoItem.pubdate,
-                short: VideoCardV.shortFormat,
-                long: VideoCardV.longFormat,
+          const SizedBox(width: 4),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Text.rich(
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                TextSpan(
+                  style: TextStyle(
+                    fontSize: theme.textTheme.labelSmall!.fontSize,
+                    color: theme.colorScheme.outline.withValues(alpha: 0.8),
+                  ),
+                  text: DateFormatUtils.dateFormat(
+                    videoItem.pubdate,
+                    short: VideoCardV.shortFormat,
+                    long: VideoCardV.longFormat,
+                  ),
+                ),
               ),
             ),
           ),

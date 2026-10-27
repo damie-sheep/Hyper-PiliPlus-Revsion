@@ -76,8 +76,6 @@ class _VideoCardHState extends State<VideoCardH> {
           VideoCardHero(
             tag: _heroTag,
             surfaceColor: transitionBackgroundOf(context),
-            preserveChildHeroes: true,
-            surfaceOnlyFlight: true,
             child: Material(
               type: .transparency,
               child: InkWell(
@@ -85,7 +83,7 @@ class _VideoCardHState extends State<VideoCardH> {
                 onSecondaryTap: PlatformUtils.isMobile ? null : onLongPress,
                 onTap: onTap != null
                     ? () => onTap!(_heroTag)
-                    : () async {
+                    : () {
                         if (videoItem.isPugv ?? false) {
                           PageUtils.viewPugv(
                             seasonId: videoItem.seasonId,
@@ -109,28 +107,15 @@ class _VideoCardHState extends State<VideoCardH> {
                           return;
                         }
 
-                        int? cid = videoItem.cid;
-                        Dimension? dimension = videoItem.dimension;
-                        if (cid == null) {
-                          if (await SearchHttp.ab2cWithDimension(
-                                aid: videoItem.aid,
-                                bvid: videoItem.bvid,
-                              )
-                              case final res?) {
-                            cid = res.cid;
-                            dimension = res.dimension;
-                          }
-                        }
-                        if (cid != null) {
-                          PageUtils.toVideoPage(
-                            bvid: videoItem.bvid,
-                            cid: cid,
-                            cover: videoItem.cover,
-                            title: videoItem.title,
-                            dimension: dimension,
-                            heroTag: _heroTag,
-                          );
-                        }
+                        PageUtils.toVideoPage(
+                          aid: videoItem.aid,
+                          bvid: videoItem.bvid,
+                          cid: videoItem.cid ?? 0,
+                          cover: videoItem.cover,
+                          title: videoItem.title,
+                          dimension: videoItem.dimension,
+                          heroTag: _heroTag,
+                        );
                       },
                 child: Padding(
                   padding: const .symmetric(
@@ -152,16 +137,18 @@ class _VideoCardHState extends State<VideoCardH> {
                             return Stack(
                               clipBehavior: .none,
                               children: [
-                                VideoCoverHero(
-                                  tag: _heroTag,
-                                  borderRadius: Style.mdRadius,
-                                  child: NetworkImgLayer(
-                                    src: videoItem.cover,
-                                    width: maxWidth,
-                                    height: maxHeight,
-                                    fixedMemCacheWidth: videoCoverDecodeWidth,
-                                    getPlaceHolder: () => ColoredBox(
-                                      color: transitionBackgroundOf(context),
+                                VideoTransitionSourcePart(
+                                  part: VideoTransitionPart.cover,
+                                  child: ClipRRect(
+                                    borderRadius: Style.mdRadius,
+                                    child: NetworkImgLayer(
+                                      src: videoItem.cover,
+                                      width: maxWidth,
+                                      height: maxHeight,
+                                      fixedMemCacheWidth: videoCoverDecodeWidth,
+                                      getPlaceHolder: () => ColoredBox(
+                                        color: transitionBackgroundOf(context),
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -244,40 +231,46 @@ class _VideoCardHState extends State<VideoCardH> {
         children: [
           if (videoItem.titleList?.isNotEmpty == true)
             Expanded(
-              child: Text.rich(
-                overflow: .ellipsis,
-                maxLines: 2,
-                TextSpan(
-                  children: videoItem.titleList!
-                      .map(
-                        (e) => TextSpan(
-                          text: e.text,
-                          style: TextStyle(
-                            fontSize: theme.textTheme.bodyMedium!.fontSize,
-                            height: 1.42,
-                            letterSpacing: 0.3,
-                            color: e.isEm
-                                ? theme.colorScheme.primary
-                                : theme.colorScheme.onSurface,
+              child: VideoTransitionSourcePart(
+                part: VideoTransitionPart.title,
+                child: Text.rich(
+                  overflow: .ellipsis,
+                  maxLines: 2,
+                  TextSpan(
+                    children: videoItem.titleList!
+                        .map(
+                          (e) => TextSpan(
+                            text: e.text,
+                            style: TextStyle(
+                              fontSize: theme.textTheme.bodyMedium!.fontSize,
+                              height: 1.42,
+                              letterSpacing: 0.3,
+                              color: e.isEm
+                                  ? theme.colorScheme.primary
+                                  : theme.colorScheme.onSurface,
+                            ),
                           ),
-                        ),
-                      )
-                      .toList(),
+                        )
+                        .toList(),
+                  ),
                 ),
               ),
             )
           else
             Expanded(
-              child: Text(
-                videoItem.title,
-                textAlign: .start,
-                style: TextStyle(
-                  fontSize: theme.textTheme.bodyMedium!.fontSize,
-                  height: 1.42,
-                  letterSpacing: 0.3,
+              child: VideoTransitionSourcePart(
+                part: VideoTransitionPart.title,
+                child: Text(
+                  videoItem.title,
+                  textAlign: .start,
+                  style: TextStyle(
+                    fontSize: theme.textTheme.bodyMedium!.fontSize,
+                    height: 1.42,
+                    letterSpacing: 0.3,
+                  ),
+                  maxLines: 2,
+                  overflow: .ellipsis,
                 ),
-                maxLines: 2,
-                overflow: .ellipsis,
               ),
             ),
           Text(

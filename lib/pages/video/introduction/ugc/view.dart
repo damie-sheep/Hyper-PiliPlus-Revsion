@@ -23,6 +23,7 @@ import 'package:PiliPlus/pages/mine/controller.dart';
 import 'package:PiliPlus/pages/search/widgets/search_text.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
+import 'package:PiliPlus/pages/video/introduction/ugc/loading_skeleton.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/action_item.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/page.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/season.dart';
@@ -103,6 +104,11 @@ class _UgcIntroPanelState extends State<UgcIntroPanel> {
         () {
           final videoDetail = introController.videoDetail.value;
           final isLoading = videoDetail.bvid == null;
+          if (isLoading && introController.status.value) {
+            return SliverToBoxAdapter(
+              child: UgcIntroLoadingSkeleton(title: videoDetail.title),
+            );
+          }
           return SliverToBoxAdapter(
             child: GestureDetector(
               onTap: () {
@@ -114,15 +120,19 @@ class _UgcIntroPanelState extends State<UgcIntroPanel> {
                 crossAxisAlignment: .start,
                 children: [
                   NoTranslucentArea(
-                    child: _buildOwnerInfo(
-                      isLoading,
-                      isPortrait,
-                      isHorizontal,
-                      videoDetail,
+                    child: UgcIntroOwnerSlot(
+                      child: _buildOwnerInfo(
+                        isLoading,
+                        isPortrait,
+                        isHorizontal,
+                        videoDetail,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 8),
-                  _buildTitle(isLoading, isHorizontal, videoDetail),
+                  UgcIntroTitleSlot(
+                    child: _buildTitle(isLoading, isHorizontal, videoDetail),
+                  ),
                   const SizedBox(height: 8),
                   Stack(
                     clipBehavior: .none,

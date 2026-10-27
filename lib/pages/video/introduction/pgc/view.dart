@@ -7,6 +7,7 @@ import 'package:PiliPlus/common/widgets/dialog/dialog.dart';
 import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/common/widgets/image_viewer/hero.dart';
 import 'package:PiliPlus/common/widgets/stat/stat.dart';
+import 'package:PiliPlus/common/widgets/video_card/video_card_transition.dart';
 import 'package:PiliPlus/models/common/image_preview_type.dart';
 import 'package:PiliPlus/models/common/image_type.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_info_model/result.dart';
@@ -258,11 +259,14 @@ class _PgcIntroPageState extends State<PgcIntroPage> {
         spacing: 20,
         children: [
           Expanded(
-            child: Text(
-              item.title!,
-              style: const TextStyle(fontSize: 16),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            child: VideoTransitionTargetPart(
+              part: VideoTransitionPart.title,
+              child: Text(
+                item.title!,
+                style: const TextStyle(fontSize: 16),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
           subBtn(),
@@ -378,9 +382,12 @@ class _PgcIntroPageState extends State<PgcIntroPage> {
           ),
           const SizedBox(height: 6),
         ],
-        Text(
-          item.title!,
-          style: const TextStyle(fontSize: 16),
+        VideoTransitionTargetPart(
+          part: VideoTransitionPart.title,
+          child: Text(
+            item.title!,
+            style: const TextStyle(fontSize: 16),
+          ),
         ),
         if (item.subtitle?.isNotEmpty == true) ...[
           const SizedBox(height: 5),

@@ -4,7 +4,6 @@ import 'dart:math';
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
 import 'package:PiliPlus/common/widgets/flutter/pop_scope.dart';
-import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/common/widgets/keep_alive_wrapper.dart';
 import 'package:PiliPlus/common/widgets/route_aware_mixin.dart';
 import 'package:PiliPlus/common/widgets/scaffold/mini_scaffold.dart';
@@ -1386,78 +1385,81 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       );
     }
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(
-            color: theme.dividerColor.withValues(alpha: 0.1),
+    return VideoTransitionTargetPart(
+      part: VideoTransitionPart.tabs,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: theme.dividerColor.withValues(alpha: 0.1),
+            ),
           ),
         ),
-      ),
-      child: SizedBox(
-        height: 45,
-        child: Row(
-          children: [
-            if (tabs.isEmpty)
-              const Spacer()
-            else
-              Expanded(
-                child: Align(
-                  alignment: .centerLeft,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: 96.0 * tabs.length),
-                    child: tabBar(),
-                  ),
-                ),
-              ),
-            SizedBox(
-              height: 32,
-              child: TextButton(
-                style: const ButtonStyle(
-                  padding: WidgetStatePropertyAll(.zero),
-                ),
-                onPressed: videoDetailController.showShootDanmakuSheet,
-                child: Text(
-                  '发弹幕',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ),
-            SizedBox.square(
-              dimension: 38,
-              child: Obx(
-                () {
-                  final ctr = videoDetailController.plPlayerController;
-                  final enableShowDanmaku = ctr.enableShowDanmaku.value;
-                  return IconButton(
-                    onPressed: () {
-                      final newVal = !enableShowDanmaku;
-                      ctr.enableShowDanmaku.value = newVal;
-                      if (!ctr.tempPlayerConf) {
-                        GStorage.setting.put(
-                          SettingBoxKey.enableShowDanmaku,
-                          newVal,
-                        );
-                      }
-                    },
-                    icon: Icon(
-                      size: 22,
-                      enableShowDanmaku
-                          ? CustomIcons.dm_on
-                          : CustomIcons.dm_off,
-                      color: enableShowDanmaku
-                          ? colorScheme.secondary
-                          : colorScheme.outline,
+        child: SizedBox(
+          height: 45,
+          child: Row(
+            children: [
+              if (tabs.isEmpty)
+                const Spacer()
+              else
+                Expanded(
+                  child: Align(
+                    alignment: .centerLeft,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: 96.0 * tabs.length),
+                      child: tabBar(),
                     ),
-                  );
-                },
+                  ),
+                ),
+              SizedBox(
+                height: 32,
+                child: TextButton(
+                  style: const ButtonStyle(
+                    padding: WidgetStatePropertyAll(.zero),
+                  ),
+                  onPressed: videoDetailController.showShootDanmakuSheet,
+                  child: Text(
+                    '发弹幕',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(width: 14),
-          ],
+              SizedBox.square(
+                dimension: 38,
+                child: Obx(
+                  () {
+                    final ctr = videoDetailController.plPlayerController;
+                    final enableShowDanmaku = ctr.enableShowDanmaku.value;
+                    return IconButton(
+                      onPressed: () {
+                        final newVal = !enableShowDanmaku;
+                        ctr.enableShowDanmaku.value = newVal;
+                        if (!ctr.tempPlayerConf) {
+                          GStorage.setting.put(
+                            SettingBoxKey.enableShowDanmaku,
+                            newVal,
+                          );
+                        }
+                      },
+                      icon: Icon(
+                        size: 22,
+                        enableShowDanmaku
+                            ? CustomIcons.dm_on
+                            : CustomIcons.dm_off,
+                        color: enableShowDanmaku
+                            ? colorScheme.secondary
+                            : colorScheme.outline,
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(width: 14),
+            ],
+          ),
         ),
       ),
     );
@@ -1475,31 +1477,13 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           ),
         ),
 
-        plPlayer(width: width, height: height),
-
-        Positioned.fill(
-          child: Obx(() {
-            final cover = NetworkImgLayer(
-              type: .emote,
-              quality: 1,
-              src: videoDetailController.cover.value,
-              width: width,
-              height: height,
-              fixedMemCacheWidth: videoCoverDecodeWidth,
-              fadeInDuration: Duration.zero,
-              fadeOutDuration: Duration.zero,
-              getPlaceHolder: () => ColoredBox(
-                color: colorScheme.surfaceContainerLow,
-              ),
-            );
-            return IgnorePointer(
-              child: VideoCoverHero(
-                tag: heroTag,
-                visible: false,
-                child: cover,
-              ),
-            );
-          }),
+        VideoTransitionTargetPart(
+          part: VideoTransitionPart.cover,
+          child: SizedBox(
+            width: width,
+            height: height,
+            child: plPlayer(width: width, height: height),
+          ),
         ),
 
         Obx(() {
