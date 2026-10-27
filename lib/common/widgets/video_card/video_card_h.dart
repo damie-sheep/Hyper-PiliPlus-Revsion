@@ -76,6 +76,8 @@ class _VideoCardHState extends State<VideoCardH> {
           VideoCardHero(
             tag: _heroTag,
             surfaceColor: transitionBackgroundOf(context),
+            preserveChildHeroes: true,
+            surfaceOnlyFlight: true,
             child: Material(
               type: .transparency,
               child: InkWell(
@@ -150,10 +152,18 @@ class _VideoCardHState extends State<VideoCardH> {
                             return Stack(
                               clipBehavior: .none,
                               children: [
-                                NetworkImgLayer(
-                                  src: videoItem.cover,
-                                  width: maxWidth,
-                                  height: maxHeight,
+                                VideoCoverHero(
+                                  tag: _heroTag,
+                                  borderRadius: Style.mdRadius,
+                                  child: NetworkImgLayer(
+                                    src: videoItem.cover,
+                                    width: maxWidth,
+                                    height: maxHeight,
+                                    fixedMemCacheWidth: videoCoverDecodeWidth,
+                                    getPlaceHolder: () => ColoredBox(
+                                      color: transitionBackgroundOf(context),
+                                    ),
+                                  ),
                                 ),
                                 if (videoItem.badge case final badge?)
                                   PBadge(

@@ -3,11 +3,12 @@ import 'dart:ui' as ui show lerpDouble;
 
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+    show TargetPlatform, ValueListenable, defaultTargetPlatform, kIsWeb;
 import 'package:get/get.dart' show GetPageRoute;
 import 'package:material_ui/material_ui.dart';
 
 const double _cardRadius = 12;
+const int videoCoverDecodeWidth = 640;
 const double _pageRadius = 72;
 const Curve _containerCurve = Interval(
   0,
@@ -17,16 +18,16 @@ const Curve _containerCurve = Interval(
 // Reveal the destination during the first half of the expansion. This leaves
 // an already-painted page in place when the card reaches the viewport instead
 // of holding a blank surface until the route settles.
-const Curve _revealCurve = Interval(0.18, 0.58, curve: Curves.easeInOutCubic);
-// The player decoder is heavier than ordinary page UI. Start it only after
-// that UI is visible, but while the card is still completing its expansion.
-const double _entryContentReadyAt = 0.62;
+const Curve _revealCurve = Interval(0.08, 0.38, curve: Curves.easeInOutCubic);
+// Give the destination one initial frame, then start opening media in parallel
+// with the rest of the transition.
+const double _entryContentReadyAt = 0.08;
 const Duration videoPageTransitionDuration = Duration(milliseconds: 680);
 const Duration videoPageReverseTransitionDuration = Duration(milliseconds: 320);
 ({Object tag, RenderBox box, BuildContext context})? _pendingVideoTransition;
 final _enteringVideoPages = <Object, Completer<bool>>{};
 
-/// Begin decoder setup only after the page is visibly taking over the card.
+/// Avoid starting decoder setup before the route has begun painting.
 Future<bool> waitForVideoPageEntry(Object? tag) async =>
     await _enteringVideoPages[tag]?.future ?? true;
 
@@ -106,8 +107,7 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
     super.install();
     if (_entryTag case final tag?) _enteringVideoPages[tag] = _entryReady;
     // Listen to the real controller, not Hero's offstage proxy animation. The
-    // decoder begins only after the revealed page UI has taken over, but before
-    // the card finishes its final expansion.
+    // decoder starts early while retaining cancellation before the first frame.
     controller
       ?..addStatusListener(_entryStatus)
       ..addListener(_entryProgress);
@@ -212,12 +212,14 @@ class VideoCardHero extends StatelessWidget {
     required this.surfaceColor,
     required this.child,
     this.preserveChildHeroes = false,
+    this.surfaceOnlyFlight = false,
   });
 
   final Object tag;
   final Color surfaceColor;
   final Widget child;
   final bool preserveChildHeroes;
+  final bool surfaceOnlyFlight;
 
   @override
   Widget build(BuildContext context) {
@@ -231,7 +233,7 @@ class VideoCardHero extends StatelessWidget {
       flightShuttleBuilder: _buildFlightShuttle,
       child: _CardSurface(
         color: surfaceColor,
-        flightChild: preserveChildHeroes ? child : null,
+        flightChild: preserveChildHeroes && !surfaceOnlyFlight ? child : null,
         child: preserveChildHeroes ? const SizedBox.expand() : child,
       ),
     );
@@ -242,11 +244,191 @@ class VideoCardHero extends StatelessWidget {
       child: preserveChildHeroes
           ? Stack(
               children: [
-                child,
                 Positioned.fill(child: IgnorePointer(child: hero)),
+                child,
               ],
             )
           : hero,
+    );
+  }
+}
+
+/// The cover flies independently of the page surface. The tag is derived from
+/// the existing route tag so horizontal and vertical cards share one target.
+Object videoCoverHeroTag(Object tag) => (tag, #videoCover);
+
+class VideoCoverHero extends StatelessWidget {
+  const VideoCoverHero({
+    super.key,
+    required this.tag,
+    required this.child,
+    this.visible = true,
+    this.borderRadius = BorderRadius.zero,
+  });
+
+  final Object tag;
+  final Widget child;
+  final bool visible;
+  final BorderRadius borderRadius;
+
+  @override
+  Widget build(BuildContext context) => Hero(
+    tag: videoCoverHeroTag(tag),
+    transitionOnUserGestures: true,
+    flightShuttleBuilder: (context, animation, direction, from, to) {
+      final source = direction == HeroFlightDirection.push ? from : to;
+      final sourceHero = source.widget as Hero;
+      final sourceCover = sourceHero.child as VideoCoverHeroFrame;
+      final sourceBox = source.findRenderObject() as RenderBox?;
+      final sourceSize = sourceBox?.size ?? const Size(1, 1);
+      return AnimatedBuilder(
+        animation: animation,
+        child: InheritedTheme.captureAll(source, sourceCover.child),
+        builder: (context, image) => ClipRRect(
+          key: const ValueKey('video-cover-flight'),
+          borderRadius: BorderRadius.lerp(
+            sourceCover.borderRadius,
+            BorderRadius.zero,
+            direction == HeroFlightDirection.push
+                ? animation.value
+                : 1 - animation.value,
+          )!,
+          child: Opacity(
+            key: const ValueKey('video-cover-flight-opacity'),
+            opacity: 1 - const Interval(0, 0.18).transform(animation.value),
+            child: FittedBox(
+              fit: BoxFit.fill,
+              child: SizedBox.fromSize(size: sourceSize, child: image),
+            ),
+          ),
+        ),
+      );
+    },
+    child: VideoCoverHeroFrame(
+      borderRadius: borderRadius,
+      child: Opacity(opacity: visible ? 1 : 0, child: child),
+    ),
+  );
+}
+
+class VideoCoverHeroFrame extends StatelessWidget {
+  const VideoCoverHeroFrame({
+    super.key,
+    required this.borderRadius,
+    required this.child,
+  });
+  final BorderRadius borderRadius;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: borderRadius,
+    child: child,
+  );
+}
+
+/// Route-local cover gate. Neither playback nor controller creation opens it.
+class VideoFirstFrameGate extends ChangeNotifier {
+  Object? _identity;
+  ValueListenable<Rect?>? _rect;
+  VoidCallback? _rectListener;
+  int _generation = 0;
+  bool ready = false;
+
+  void bind({
+    required Object? identity,
+    required Future<void>? firstFrame,
+    required ValueListenable<Rect?>? videoRect,
+  }) {
+    if (identical(identity, _identity)) return;
+    _detachRect();
+    _identity = identity;
+    ready = false;
+    final generation = ++_generation;
+    if (identity == null || firstFrame == null || videoRect == null) return;
+    firstFrame.then((_) {
+      if (generation != _generation) return;
+      void check() {
+        if (generation != _generation) return;
+        final rect = videoRect.value;
+        if (rect == null || rect.width <= 1 || rect.height <= 1) return;
+        _detachRect();
+        WidgetsBinding.instance.scheduleFrame();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          WidgetsBinding.instance.scheduleFrame();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (generation == _generation) {
+              ready = true;
+              notifyListeners();
+            }
+          });
+        });
+      }
+
+      _rect = videoRect;
+      _rectListener = check;
+      videoRect.addListener(check);
+      check();
+    }, onError: (Object error, StackTrace stackTrace) {});
+  }
+
+  void _detachRect() {
+    if (_rect != null && _rectListener != null) {
+      _rect!.removeListener(_rectListener!);
+    }
+    _rect = null;
+    _rectListener = null;
+  }
+
+  @override
+  void dispose() {
+    ++_generation;
+    _detachRect();
+    super.dispose();
+  }
+}
+
+/// Keeps the late content mounted while its paint is delayed. The same route
+/// animation drives entry, interrupted entry, and interactive back gestures.
+class VideoTransitionLayer extends StatelessWidget {
+  const VideoTransitionLayer({
+    super.key,
+    required this.child,
+    this.sliver = false,
+  });
+  final Widget child;
+  final bool sliver;
+
+  @override
+  Widget build(BuildContext context) {
+    final route = ModalRoute.of(context);
+    final animation = route is VideoPageTransitionRoute
+        ? route.animation
+        : null;
+    if (animation == null) {
+      return child;
+    }
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        final opacity = const Interval(
+          0.48,
+          0.88,
+          curve: Curves.easeInOutCubic,
+        ).transform(animation.value);
+        if (sliver) {
+          return SliverOpacity(opacity: opacity, sliver: child!);
+        }
+        return IgnorePointer(
+          ignoring: opacity == 0,
+          child: Opacity(
+            key: const ValueKey('video-transition-late-content'),
+            opacity: opacity,
+            child: child,
+          ),
+        );
+      },
     );
   }
 }

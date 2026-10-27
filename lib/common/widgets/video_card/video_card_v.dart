@@ -126,6 +126,8 @@ class _VideoCardVState extends State<VideoCardV> {
         VideoCardHero(
           tag: _heroTag,
           surfaceColor: Theme.of(context).colorScheme.surfaceContainer,
+          preserveChildHeroes: true,
+          surfaceOnlyFlight: true,
           child: Card(
             margin: .zero,
             color: Theme.of(context).colorScheme.surfaceContainer,
@@ -146,12 +148,24 @@ class _VideoCardVState extends State<VideoCardV> {
                         return Stack(
                           clipBehavior: Clip.none,
                           children: [
-                            NetworkImgLayer(
-                              src: videoItem.cover,
-                              width: maxWidth,
-                              height: maxHeight,
+                            VideoCoverHero(
+                              tag: _heroTag,
                               borderRadius: const .vertical(
                                 top: .circular(12),
+                              ),
+                              child: NetworkImgLayer(
+                                src: videoItem.cover,
+                                width: maxWidth,
+                                height: maxHeight,
+                                fixedMemCacheWidth: videoCoverDecodeWidth,
+                                getPlaceHolder: () => ColoredBox(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .surfaceContainer,
+                                ),
+                                borderRadius: const .vertical(
+                                  top: .circular(12),
+                                ),
                               ),
                             ),
                             if (videoItem.duration > 0)

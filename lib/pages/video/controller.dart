@@ -853,8 +853,15 @@ class VideoDetailController extends GetxController
     if (plPlayerController.enableSponsorBlock && isBlock && !fromReset) {
       querySponsorBlock(bvid: bvid, cid: cid.value);
     }
+    final LoadingState<PlayUrlModel> result;
     if (plPlayerController.cacheVideoQa == null) {
-      final isWiFi = await ConnectivityUtils.isWiFi;
+      // The initial play URL request does not depend on the network-specific
+      // quality preference. Resolve both concurrently before choosing a stream.
+      final (isWiFi, playResult) = await (
+        ConnectivityUtils.isWiFi,
+        _getVideoUrl(VideoQuality.hdrVivid.code),
+      ).wait;
+      if (isClosed) return;
       plPlayerController
         ..cacheVideoQa = isWiFi
             ? Pref.defaultVideoQa
@@ -863,13 +870,16 @@ class VideoDetailController extends GetxController
             ? Pref.defaultAudioQa
             : Pref.defaultAudioQaCellular;
       preferCodecs = isWiFi ? Pref.preferCodecs : Pref.preferCodecsCellular;
+      result = playResult;
+    } else {
+      result = await _getVideoUrl(VideoQuality.hdrVivid.code);
+      if (isClosed) return;
     }
-
-    final result = await _getVideoUrl(VideoQuality.hdrVivid.code);
 
     if (result case Success(:final response)) {
       data = response;
       if (data.dash != null) await _supplementVideoQualities();
+      if (isClosed) return;
 
       languages.value = data.language?.items;
       currLang.value = data.curLanguage;

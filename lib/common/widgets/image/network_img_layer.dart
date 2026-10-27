@@ -22,6 +22,7 @@ class NetworkImgLayer extends StatelessWidget {
     this.fit = .cover,
     this.alignment = .center,
     this.cacheWidth,
+    this.fixedMemCacheWidth,
   });
 
   final String? src;
@@ -36,6 +37,9 @@ class NetworkImgLayer extends StatelessWidget {
   final BoxFit fit;
   final Alignment alignment;
   final bool? cacheWidth;
+
+  /// Physical pixel width shared by card and player cover image providers.
+  final int? fixedMemCacheWidth;
 
   static Color? reduceLuxColor = Pref.reduceLuxColor;
   static bool reduce = false;
@@ -65,7 +69,9 @@ class NetworkImgLayer extends StatelessWidget {
     required bool isAvatar,
   }) {
     int? memCacheWidth, memCacheHeight;
-    if (cacheWidth ?? width <= height) {
+    if (fixedMemCacheWidth case final fixed?) {
+      memCacheWidth = fixed;
+    } else if (cacheWidth ?? width <= height) {
       memCacheWidth = width.cacheSize(context);
     } else {
       memCacheHeight = height.cacheSize(context);
@@ -86,6 +92,7 @@ class NetworkImgLayer extends StatelessWidget {
           getPlaceHolder?.call() ??
           _placeholder(context, isEmote: isEmote, isAvatar: isAvatar),
       errorBuilder: (_, _, _) =>
+          getPlaceHolder?.call() ??
           _placeholder(context, isEmote: isEmote, isAvatar: isAvatar),
       colorBlendMode: reduce ? BlendMode.modulate : null,
       color: reduce ? reduceLuxColor : null,

@@ -1,7 +1,6 @@
 import 'dart:io' show Platform;
 import 'dart:math';
 
-import 'package:PiliPlus/common/assets.dart';
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
 import 'package:PiliPlus/common/widgets/flutter/pop_scope.dart';
@@ -973,9 +972,12 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                               controller:
                                   videoDetailController.effectiveIntroScrollCtr,
                               slivers: [
-                                RelatedVideoPanel(
-                                  key: videoRelatedKey,
-                                  heroTag: heroTag,
+                                VideoTransitionLayer(
+                                  sliver: true,
+                                  child: RelatedVideoPanel(
+                                    key: videoRelatedKey,
+                                    heroTag: heroTag,
+                                  ),
                                 ),
                               ],
                             ),
@@ -1473,23 +1475,32 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           ),
         ),
 
+        plPlayer(width: width, height: height),
+
         Positioned.fill(
-          child: Obx(
-            () => NetworkImgLayer(
+          child: Obx(() {
+            final cover = NetworkImgLayer(
               type: .emote,
-              quality: 60,
+              quality: 1,
               src: videoDetailController.cover.value,
               width: width,
               height: height,
-              cacheWidth: true,
-              getPlaceHolder: () => Center(
-                child: Image.asset(Assets.loading),
+              fixedMemCacheWidth: videoCoverDecodeWidth,
+              fadeInDuration: Duration.zero,
+              fadeOutDuration: Duration.zero,
+              getPlaceHolder: () => ColoredBox(
+                color: colorScheme.surfaceContainerLow,
               ),
-            ),
-          ),
+            );
+            return IgnorePointer(
+              child: VideoCoverHero(
+                tag: heroTag,
+                visible: false,
+                child: cover,
+              ),
+            );
+          }),
         ),
-
-        plPlayer(width: width, height: height),
 
         Obx(() {
           if (!videoDetailController.autoPlay) {
@@ -1685,7 +1696,13 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 ),
               ),
             ),
-            RelatedVideoPanel(key: videoRelatedKey, heroTag: heroTag),
+            VideoTransitionLayer(
+              sliver: true,
+              child: RelatedVideoPanel(
+                key: videoRelatedKey,
+                heroTag: heroTag,
+              ),
+            ),
           ],
         ] else
           PgcIntroPage(
@@ -1751,10 +1768,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     return KeepAliveWrapper(child: child);
   }
 
-  Widget get seasonPanel {
-    if (videoDetailController.isUgc) return ugcSeasonPanel;
-    return pgcSeasonPanel;
-  }
+  Widget get seasonPanel => VideoTransitionLayer(
+    child: videoDetailController.isUgc ? ugcSeasonPanel : pgcSeasonPanel,
+  );
 
   Widget get pgcSeasonPanel {
     Widget child = Obx(
@@ -1887,10 +1903,12 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     );
   }
 
-  Widget videoReplyPanel({bool isNested = false}) => VideoReplyPanel(
-    key: videoReplyPanelKey,
-    isNested: isNested,
-    heroTag: heroTag,
+  Widget videoReplyPanel({bool isNested = false}) => VideoTransitionLayer(
+    child: VideoReplyPanel(
+      key: videoReplyPanelKey,
+      isNested: isNested,
+      heroTag: heroTag,
+    ),
   );
 
   // ai总结
