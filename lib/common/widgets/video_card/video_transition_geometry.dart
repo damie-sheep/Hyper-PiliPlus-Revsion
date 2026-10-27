@@ -30,6 +30,9 @@ class VideoTransitionGeometry {
   double get coverOpacity => 1 - _track(0.05, 0.28);
   double get sourceTitleOpacity => 1 - _track(0, 0.50);
   double get targetTitleOpacity => _track(0.18, 0.50);
+  double get sourceInformationOpacity => 1 - _track(0, 0.20);
+  double get targetInformationOpacity => _track(0.20, 0.38);
+  Offset get informationTravel => Offset(0, -16 * _track(0, 0.20));
   double get relatedSourceOpacity => 1 - _track(0, 0.12);
   double get titleTravel => _track(0, 0.30);
   double get titleScale => lerpDouble(1, 1.30, _track(0, 0.50))!;

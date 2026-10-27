@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:PiliPlus/utils/video_transition_trace.dart';
+
 import 'package:PiliPlus/common/widgets/button/icon_button.dart';
 import 'package:PiliPlus/common/widgets/scroll_physics.dart' show ReloadMixin;
 import 'package:PiliPlus/http/api.dart';
@@ -86,8 +88,10 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
   // 获取视频简介&分p
   @override
   Future<void> queryVideoIntro() async {
+    traceVideoTransition(heroTag, 'intro:request');
     queryVideoTags();
     final res = await VideoHttp.videoIntro(bvid: bvid);
+    traceVideoTransition(heroTag, 'intro:response-parsed');
     if (res case Success(:final response)) {
       if (response.redirectUrl != null &&
           videoDetailCtr.epId == null &&
@@ -114,6 +118,7 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
           ..isPageReversed = currentDetail.isPageReversed;
       }
       videoDetail.value = response;
+      traceVideoTransition(heroTag, 'intro:resolved');
       try {
         if (videoDetailCtr.cover.value.isEmpty ||
             (videoDetailCtr.videoUrl.isNullOrEmpty &&

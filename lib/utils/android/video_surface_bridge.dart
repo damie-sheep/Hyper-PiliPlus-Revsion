@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:PiliPlus/utils/video_transition_trace.dart';
+
 import 'package:flutter/services.dart';
 
 /// The repository Android overlay extends the pinned plugin without changing
@@ -9,17 +11,26 @@ abstract final class VideoSurfaceBridge {
   static const _channel = MethodChannel('com.alexmercerind/media_kit_video');
 
   static Future<ui.Image?> captureFrame(int handle) async {
+    traceVideoTransition(handle, 'capture:request');
     try {
       final bytes = await _channel
           .invokeMethod<Uint8List>(
             'VideoOutputManager.CaptureFrame',
-            {'handle': '$handle'},
+            {'handle': '$handle', 'traceOwner': identityHashCode(handle)},
           )
           .timeout(const Duration(milliseconds: 250));
+      recordVideoTransition(handle, 'capture:reply', {
+        'bytes': bytes?.length ?? 0,
+      });
       if (bytes == null || bytes.isEmpty) return null;
+      traceVideoTransition(handle, 'capture:decode-start');
       final codec = await ui.instantiateImageCodec(bytes);
       try {
         final image = (await codec.getNextFrame()).image;
+        recordVideoTransition(handle, 'capture:decode-end', {
+          'width': image.width,
+          'height': image.height,
+        });
         if (image.width <= 1 || image.height <= 1) {
           image.dispose();
           return null;
@@ -29,6 +40,7 @@ abstract final class VideoSurfaceBridge {
         codec.dispose();
       }
     } catch (_) {
+      traceVideoTransition(handle, 'capture:failed-or-timeout');
       return null;
     }
   }
@@ -38,7 +50,7 @@ abstract final class VideoSurfaceBridge {
       return await _channel
           .invokeMethod<bool>(
             'VideoOutputManager.AwaitSourceFrame',
-            {'handle': '$handle', 'generation': generation},
+            {'handle': '$handle', 'generation': generation, 'traceOwner': identityHashCode(handle)},
           )
           .timeout(const Duration(milliseconds: 3200));
     } on TimeoutException {

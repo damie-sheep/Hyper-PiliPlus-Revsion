@@ -67,6 +67,7 @@ import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
+import 'package:PiliPlus/common/widgets/video_card/video_media_text_layer.dart';
 import 'package:collection/collection.dart';
 import 'package:easy_debounce/easy_throttle.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -1414,29 +1415,45 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
     );
     final isLive = plPlayerController.isLive;
 
+    Widget mediaText(bool ownsSource) => VideoMediaTextLayer(
+      ownsSource: ownsSource,
+      child: Stack(
+        children: [
+          if (widget.danmuWidget case final danmaku?)
+            Positioned.fill(top: 4, child: danmaku),
+          if (!isLive)
+            Positioned.fill(
+              child: IgnorePointer(
+                ignoring: !plPlayerController.enableDragSubtitle,
+                child: Obx(
+                  () => SubtitleView(
+                    controller: videoController,
+                    configuration: plPlayerController.subtitleConfig.value,
+                    enableDragSubtitle: plPlayerController.enableDragSubtitle,
+                    onUpdatePadding: plPlayerController.onUpdatePadding,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
     final child = Stack(
       fit: StackFit.passthrough,
       key: _playerKey,
       children: <Widget>[
         _videoWidget,
 
-        if (widget.danmuWidget case final danmaku?)
-          Positioned.fill(top: 4, child: danmaku),
-
-        if (!isLive)
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: !plPlayerController.enableDragSubtitle,
-              child: Obx(
-                () => SubtitleView(
-                  controller: videoController,
-                  configuration: plPlayerController.subtitleConfig.value,
-                  enableDragSubtitle: plPlayerController.enableDragSubtitle,
-                  onUpdatePadding: plPlayerController.onUpdatePadding,
+        Positioned.fill(
+          child: widget.videoDetailController == null
+              ? mediaText(true)
+              : Obx(
+                  () => mediaText(
+                    widget.videoDetailController!.videoFrameReady.value &&
+                        widget.videoDetailController!.isForeground,
+                  ),
                 ),
-              ),
-            ),
-          ),
+        ),
 
         if (plPlayerController.enableTapDm)
           Obx(

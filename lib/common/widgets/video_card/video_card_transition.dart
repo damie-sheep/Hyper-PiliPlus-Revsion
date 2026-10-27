@@ -97,8 +97,8 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   @override
   void install() {
     super.install();
-    traceVideoTransition(_entryTag, 'route:install');
     beginVideoTransitionTrace(_entryTag);
+    traceVideoTransition(_entryTag, 'route:install');
     _coveringVideoPages.add(_coverageReady.future);
     if (_entryTag case final tag?) _enteringVideoPages[tag] = _entryReady;
     controller
@@ -158,6 +158,7 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
 
   @override
   void handleStartBackGesture({double progress = 0.0}) {
+    traceVideoTransition(_entryTag, 'route:gesture-start');
     _gestureCommitted = false;
     super.handleStartBackGesture(progress: progress);
   }
@@ -223,7 +224,7 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   ) => child;
 }
 
-enum VideoTransitionPart { cover, tabs, owner, title, details }
+enum VideoTransitionPart { cover, tabs, owner, title, details, information }
 
 /// Marks the actual painted child, preserving rich text, line breaks and scale.
 class VideoTransitionSourcePart extends SingleChildRenderObjectWidget {
@@ -296,6 +297,7 @@ class _RenderTargetPart extends RenderProxyBox
     if (ancestor is _RenderVideoStage) {
       _stage = ancestor;
       ancestor.targets[part] = this;
+      ancestor._targetLayoutVersion++;
     }
   }
 
@@ -312,18 +314,21 @@ class _RenderTargetPart extends RenderProxyBox
 
   double get _opacity {
     final stage = _stage;
-    if (stage?.snapshot == null) return 1;
+    if (stage == null || stage.snapshot == null) return 1;
+    if (stage.hasInformationGroup && part != VideoTransitionPart.cover) {
+      return stage.geometry.targetInformationOpacity;
+    }
     if (part == VideoTransitionPart.title &&
-        stage!.mode == VideoTransitionMode.detailRelated) {
+        stage.mode == VideoTransitionMode.detailRelated) {
       return stage.geometry.informationOpacity;
     }
     return switch (part) {
       VideoTransitionPart.title
-          when stage!.snapshot!.parts[VideoTransitionPart.title] != null =>
+          when stage.snapshot!.parts[VideoTransitionPart.title] != null =>
         stage.geometry.targetTitleOpacity,
-      VideoTransitionPart.tabs => stage!.geometry.tabsOpacity,
+      VideoTransitionPart.tabs => stage.geometry.tabsOpacity,
       VideoTransitionPart.owner ||
-      VideoTransitionPart.details => stage!.geometry.informationOpacity,
+      VideoTransitionPart.details => stage.geometry.informationOpacity,
       _ => 1,
     };
   }
@@ -905,6 +910,73 @@ class _RenderVideoStage extends RenderProxyBox {
   VideoTransitionMode mode = VideoTransitionMode.homeCard;
   bool _tracedFirstPaint = false;
   Object? _traceOwner;
+  int _layoutVersion = 0;
+  int _targetLayoutVersion = 0;
+  int _paintSequence = 0;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    _layoutVersion++;
+  }
+
+  void _recordPaint() {
+    if (!videoTransitionTraceCollecting) return;
+    List<double> rect(Rect value) => [
+      value.left,
+      value.top,
+      value.width,
+      value.height,
+    ];
+    final origin = localToGlobal(Offset.zero);
+    final frame = geometry;
+    final targetMedia = _target(VideoTransitionPart.cover)?.rect;
+    final paintedMedia = snapshot == null
+        ? targetMedia
+        : (mediaRect ??
+              (targetMedia == null ? null : frame.mapRect(targetMedia)));
+    recordVideoTransition(_traceOwner, 'stage:paint', {
+      'paint': ++_paintSequence,
+      'raw': _progress,
+      'expansion': geometry.expansion,
+      'engineUs':
+          WidgetsBinding.instance.currentSystemFrameTimeStamp.inMicroseconds,
+      'units': 'logical-pixels-stage-local',
+      'globalOrigin': [origin.dx, origin.dy],
+      'viewport': [size.width, size.height],
+      'container': rect(geometry.container),
+      'source': rect(geometry.source),
+      'layoutVersion': _layoutVersion,
+      'targetLayoutVersion': _targetLayoutVersion,
+      'mode': mode.name,
+      'fallback': _fallback
+          ? 'source-or-viewport-invalid'
+          : (snapshot == null ? 'capture-unavailable' : null),
+      'mediaPaint': paintedMedia == null ? null : rect(paintedMedia),
+      'targetUnits': 'detail-local-before-carrier-transform',
+      'targets': {
+        for (final part in targets.keys)
+          if (_target(part) case final target?) part.name: rect(target.rect),
+      },
+    });
+  }
+
+  void _paintMarker(Canvas canvas, Offset offset) {
+    if (!videoTransitionMarkerEnabled) return;
+    // Twelve binary cells encode the paint sample for video/log alignment.
+    for (var bit = 0; bit < 12; bit++) {
+      canvas.drawRect(
+        Rect.fromLTWH(offset.dx + 8 + bit * 4, offset.dy + 32, 4, 8),
+        Paint()
+          ..color = (_paintSequence & (1 << bit)) == 0
+              ? Colors.black
+              : Colors.pink,
+      );
+    }
+  }
+
+  bool get hasInformationGroup =>
+      snapshot?.parts.containsKey(VideoTransitionPart.information) ?? false;
 
   void configure(_VideoStage widget) {
     snapshot = widget.snapshot;
@@ -984,17 +1056,25 @@ class _RenderVideoStage extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    _recordPaint();
     if (!_tracedFirstPaint) {
       _tracedFirstPaint = true;
       traceVideoTransition(_traceOwner, 'stage:first-paint mode=${mode.name}');
     }
     final source = snapshot;
     if (source == null) {
-      if (_fallback && _progress < 1) {
-        context.pushOpacity(offset, (_progress * 255).round(), super.paint);
-      } else {
+      // The carrier owns the surface even on standalone/fallback pages.
+      void paintPage(PaintingContext context, Offset offset) {
+        context.canvas.drawRect(offset & size, Paint()..color = _color);
         super.paint(context, offset);
       }
+
+      if (_fallback && _progress < 1) {
+        context.pushOpacity(offset, (_progress * 255).round(), paintPage);
+      } else {
+        paintPage(context, offset);
+      }
+      _paintMarker(context.canvas, offset);
       return;
     }
     final frame = geometry;
@@ -1011,7 +1091,13 @@ class _RenderVideoStage extends RenderProxyBox {
       rect,
       RRect.fromRectAndRadius(rect, Radius.circular(frame.radius)),
       (context, offset) {
-        context.canvas.drawRect(rect.shift(offset), Paint()..color = _color);
+        context.canvas.drawRect(
+          rect.shift(offset),
+          Paint()
+            ..color = hasInformationGroup
+                ? Color.lerp(source.color, _color, frame.expansion)!
+                : _color,
+        );
         context.pushTransform(
           needsCompositing,
           offset,
@@ -1026,6 +1112,7 @@ class _RenderVideoStage extends RenderProxyBox {
         canvas.restore();
       },
     );
+    _paintMarker(context.canvas, offset);
   }
 
   void _draw(Canvas canvas, ui.Image image, Rect rect, double opacity) {
@@ -1060,7 +1147,7 @@ class _RenderVideoStage extends RenderProxyBox {
     Rect inCard(Rect part) =>
         (rect.topLeft + (part.topLeft - source.rect.topLeft) * cardScale) &
         (part.size * cardScale);
-    if (frame.remainderOpacity > 0) {
+    if (!hasInformationGroup && frame.remainderOpacity > 0) {
       // Preserve the source card's own surface behind transparent text at the
       // start, including light-list -> dark-detail transitions. It exits with
       // the other card decorations, before title handoff.
@@ -1104,6 +1191,18 @@ class _RenderVideoStage extends RenderProxyBox {
       canvas.restore();
     }
     final title = source.parts[VideoTransitionPart.title];
+    final information = source.parts[VideoTransitionPart.information];
+    if (information != null) {
+      // One transparent image keeps title/stat/author in their real layout.
+      // Short translation only: never stretch two source lines into target text.
+      _draw(
+        canvas,
+        information.image,
+        information.rect.shift(sourceShift + frame.informationTravel),
+        frame.sourceInformationOpacity,
+      );
+      return;
+    }
     if (title != null && frame.sourceTitleOpacity > 0) {
       final target = _target(VideoTransitionPart.title);
       final from = title.rect.topLeft + sourceShift + Offset(0, title.baseline);

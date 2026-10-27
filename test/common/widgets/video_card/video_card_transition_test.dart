@@ -143,6 +143,7 @@ Future<Rect> _open(
   double textScale = 1,
   bool dark = false,
   bool markers = true,
+  bool grouped = false,
   VideoTransitionMode mode = VideoTransitionMode.homeCard,
   double playerHeight = 225,
 }) async {
@@ -178,6 +179,7 @@ Future<Rect> _open(
           sourceVisible: sourceVisible,
           sourceTop: sourceTop,
           markers: markers,
+          grouped: grouped,
           mode: mode,
           playerHeight: playerHeight,
         ),
@@ -656,6 +658,58 @@ void main() {
     expect((await _pixels(tester)).sourceInkContrast, 0);
   });
 
+  for (final dark in [false, true]) {
+    testWidgets('information group keeps layout and one panel, dark=$dark', (
+      tester,
+    ) async {
+      final source = await _open(tester, grouped: true, dark: dark);
+      await _seek(tester, 0);
+      final before = (await _pixels(tester)).magentaBounds()!;
+      var lastContrast = 256;
+      for (final e in [0.0, 0.04, 0.08, 0.12]) {
+        await _seek(tester, e);
+        final shot = await _pixels(tester, 'group-$dark-$e');
+        final bounds = shot.magentaBounds()!;
+        final frame = VideoTransitionGeometry(
+          source: source,
+          viewport: const Size(400, 800),
+          progress: _route.animation!.value,
+        );
+        expect(bounds.width, closeTo(before.width, 1));
+        expect(bounds.height, closeTo(before.height, 1));
+        // Frozen 2 logical-pixel tolerance: raster sampling and alpha threshold.
+        expect(bounds.top, closeTo(before.top + frame.informationTravel.dy, 2));
+        expect(shot.sourceInkContrast, lessThanOrEqualTo(lastContrast));
+        lastContrast = shot.sourceInkContrast;
+        // Below the source-sized card, the carrier has the exact same surface.
+        final cardBottom =
+            frame.container.top +
+            source.height * frame.container.width / source.width;
+        final x = frame.container.right - 3;
+        if (cardBottom + 3 < frame.container.bottom) {
+          expect(
+            shot.at(Offset(x, cardBottom - 2)),
+            shot.at(Offset(x, cardBottom + 2)),
+          );
+        }
+      }
+      await _seek(tester, 0.2);
+      expect((await _pixels(tester)).magentaBounds(), isNull);
+      await _seek(tester, 1);
+      _route
+        ..handleStartBackGesture(progress: 1)
+        ..handleUpdateBackGestureProgress(progress: 0.75);
+      await tester.pump();
+      _route.handleCancelBackGesture();
+      await tester.pumpAndSettle();
+      expect((await _pixels(tester)).magentaBounds(), isNull);
+      _route.navigator!.pop();
+      await tester.pumpAndSettle();
+      final after = (await _pixels(tester)).magentaBounds()!;
+      expect(after, before);
+    });
+  }
+
   for (final height in [225.0, 600.0]) {
     testWidgets(
       'related panel has continuous media without cover flight height=$height',
@@ -971,7 +1025,10 @@ void main() {
           final titlePart = find.byWidgetPredicate(
             (widget) =>
                 widget is VideoTransitionSourcePart &&
-                widget.part == VideoTransitionPart.title,
+                widget.part ==
+                    (horizontal
+                        ? VideoTransitionPart.title
+                        : VideoTransitionPart.information),
           );
           final sourceTitleRect = tester.getRect(titlePart);
           final inkBefore = (await _pixels(tester)).darkPixels(sourceTitleRect);
@@ -981,7 +1038,12 @@ void main() {
           );
           expect(
             parts.map((part) => part.part),
-            containsAll([VideoTransitionPart.cover, VideoTransitionPart.title]),
+            containsAll([
+              VideoTransitionPart.cover,
+              horizontal
+                  ? VideoTransitionPart.title
+                  : VideoTransitionPart.information,
+            ]),
           );
           final tag = tester.widget<VideoCardHero>(card).tag;
           final gesture = await tester.startGesture(tester.getCenter(card));
@@ -1164,6 +1226,7 @@ class _Source extends StatelessWidget {
     this.sourceVisible,
     this.sourceTop,
     this.markers = true,
+    this.grouped = false,
     this.mode = VideoTransitionMode.homeCard,
     this.playerHeight = 225,
   });
@@ -1174,6 +1237,7 @@ class _Source extends StatelessWidget {
   final ValueNotifier<bool>? sourceVisible;
   final ValueNotifier<double>? sourceTop;
   final bool markers;
+  final bool grouped;
   final VideoTransitionMode mode;
   final double playerHeight;
 
@@ -1197,6 +1261,7 @@ class _Source extends StatelessWidget {
                 loaded: loaded,
                 player: player,
                 playerHeight: playerHeight,
+                transparent: grouped,
               ),
             );
             Navigator.of(context).push(_route);
@@ -1217,16 +1282,41 @@ class _Source extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.all(6),
                   child: mark(
-                    VideoTransitionPart.title,
-                    const Text(
-                      'SOURCE TITLE',
-                      key: _sourceTitleKey,
-                      maxLines: 2,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontFamily: 'Ahem',
-                        color: _sourceInk,
-                      ),
+                    grouped
+                        ? VideoTransitionPart.information
+                        : VideoTransitionPart.title,
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'SOURCE TITLE',
+                          key: _sourceTitleKey,
+                          maxLines: 2,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontFamily: 'Ahem',
+                            color: _sourceInk,
+                          ),
+                        ),
+                        if (grouped) ...[
+                          const Text(
+                            'STAT',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontFamily: 'Ahem',
+                              color: _sourceInk,
+                            ),
+                          ),
+                          const Text(
+                            'AUTHOR',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontFamily: 'Ahem',
+                              color: _sourceInk,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ),
@@ -1278,11 +1368,13 @@ class _Details extends StatefulWidget {
     this.player,
     this.tag = _tag,
     this.playerHeight = 225,
+    this.transparent = false,
   });
   final Object tag;
   final ValueNotifier<bool>? loaded;
   final ValueNotifier<Color>? player;
   final double playerHeight;
+  final bool transparent;
   @override
   State<_Details> createState() => _DetailsState();
 }
@@ -1307,6 +1399,7 @@ class _DetailsState extends State<_Details> with RouteAware, RouteAwareMixin {
     tag: widget.tag,
     surfaceColor: Theme.of(context).scaffoldBackgroundColor,
     child: Scaffold(
+      backgroundColor: widget.transparent ? Colors.transparent : null,
       body: Stack(
         children: [
           Positioned(

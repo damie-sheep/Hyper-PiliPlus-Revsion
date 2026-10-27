@@ -18,6 +18,7 @@ import 'package:PiliPlus/common/widgets/simple_app_bar.dart';
 import 'package:PiliPlus/common/widgets/sliver/video_header.dart';
 import 'package:PiliPlus/common/widgets/svg/play_icon.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_card_transition.dart';
+import 'package:PiliPlus/common/widgets/video_card/video_transition_paint_probe.dart';
 import 'package:PiliPlus/models/common/episode_panel_type.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_info_model/result.dart';
 import 'package:PiliPlus/models_new/video/video_detail/episode.dart' as ugc;
@@ -589,6 +590,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       () {
         final isFullScreen = this.isFullScreen;
         return SimpleScaffold(
+          backgroundColor: Colors.transparent,
           appBar: removeAppBar(isFullScreen)
               ? null
               : Obx(
@@ -852,6 +854,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     () {
       final isFullScreen = this.isFullScreen;
       return SimpleScaffold(
+        backgroundColor: Colors.transparent,
         appBar: removeAppBar(isFullScreen)
             ? null
             : SimpleAppBar(
@@ -1086,6 +1089,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   Widget get childWhenDisabledAlmostSquare => Obx(() {
     final isFullScreen = this.isFullScreen;
     return SimpleScaffold(
+      backgroundColor: Colors.transparent,
       appBar: removeAppBar(isFullScreen)
           ? null
           : SimpleAppBar(
@@ -1596,9 +1600,13 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                                           (_retainedAspect ??
                                               image.width / image.height),
                                       height: image.height.toDouble(),
-                                      child: RawImage(
-                                        image: image,
-                                        fit: BoxFit.fill,
+                                      child: VideoTransitionPaintProbe(
+                                        owner: heroTag,
+                                        token: image,
+                                        child: RawImage(
+                                          image: image,
+                                          fit: BoxFit.fill,
+                                        ),
                                       ),
                                     ),
                                   ),

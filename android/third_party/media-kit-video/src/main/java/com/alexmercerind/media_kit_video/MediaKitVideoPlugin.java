@@ -97,11 +97,18 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
                 }
             }
             switch (call.method) {
+                case "VideoOutputManager.Diagnostics": {
+                    result.success(VideoDiagnostics.collect(Boolean.TRUE.equals(call.argument("enabled")),
+                            Boolean.TRUE.equals(call.argument("drain"))));
+                    break;
+                }
                 case "VideoOutputManager.CaptureFrame":
                 case "VideoOutputManager.AwaitSourceFrame":
                 case "VideoOutputManager.CancelSourceFrame": {
                     final String handle = call.argument("handle");
                     final VideoOutput output = handle == null ? null : videoOutputManager.find(Long.parseLong(handle));
+                    final Number traceOwner = call.argument("traceOwner");
+                    if (output != null && traceOwner != null) VideoDiagnostics.record(output, "bridge:owner", traceOwner.longValue());
                     if (output == null) {
                         result.success(null);
                     } else if (call.method.equals("VideoOutputManager.CaptureFrame")) {

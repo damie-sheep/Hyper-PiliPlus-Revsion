@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:PiliPlus/common/widgets/video_card/video_media_text_layer.dart';
+
 import 'package:PiliPlus/grpc/bilibili/community/service/dm/v1.pb.dart';
 import 'package:PiliPlus/pages/danmaku/controller.dart';
 import 'package:PiliPlus/pages/danmaku/danmaku_model.dart';
@@ -42,6 +44,14 @@ class _PlDanmakuState extends State<PlDanmaku> {
   late final PlDanmakuController _plDanmakuController;
   DanmakuController<DanmakuExtra>? _controller;
   int latestAddedPosition = -1;
+  bool _routeActive = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _routeActive = VideoMediaTextScope.activeOf(context);
+    playerListener(playerController.playerStatus);
+  }
 
   @override
   void initState() {
@@ -82,7 +92,7 @@ class _PlDanmakuState extends State<PlDanmaku> {
   // 播放器状态监听
   void playerListener(PlayerStatus status) {
     if (_controller case final controller?) {
-      if (status.isPlaying) {
+      if (status.isPlaying && _routeActive) {
         controller.resume();
       } else {
         controller.pause();
@@ -92,7 +102,9 @@ class _PlDanmakuState extends State<PlDanmaku> {
 
   @pragma('vm:notify-debugger-on-exception')
   void videoPositionListen(Duration position) {
-    if (_controller == null || !playerController.enableShowDanmaku.value) {
+    if (!_routeActive ||
+        _controller == null ||
+        !playerController.enableShowDanmaku.value) {
       return;
     }
 
@@ -183,6 +195,7 @@ class _PlDanmakuState extends State<PlDanmaku> {
         child: DanmakuScreen<DanmakuExtra>(
           createdController: (e) {
             playerController.danmakuController = _controller = e;
+            playerListener(playerController.playerStatus);
           },
           option: option,
           size: widget.size,

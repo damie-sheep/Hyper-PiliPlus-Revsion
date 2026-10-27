@@ -74,7 +74,9 @@ class UgcIntroContent extends StatelessWidget {
         children: [
           for (final child in previous)
             Positioned.fill(
-              child: ExcludeSemantics(child: IgnorePointer(child: child)),
+              child: Offstage(
+                child: ExcludeSemantics(child: IgnorePointer(child: child)),
+              ),
             ),
           ?current,
         ],

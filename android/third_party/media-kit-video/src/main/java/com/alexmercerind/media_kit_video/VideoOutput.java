@@ -67,20 +67,26 @@ public class VideoOutput {
     }
 
     public void awaitSourceFrame(long generation, MethodChannel.Result result) {
+        VideoDiagnostics.record(this, "frame:arm", generation);
         if (disposed || !flutterJNIAPIAvailable) {
             result.success(null);
             return;
         }
-        sourceFrames.arm(generation, ready -> mainHandler.post(() -> result.success(ready)));
+        sourceFrames.arm(generation, ready -> mainHandler.post(() -> {
+            VideoDiagnostics.record(this, ready ? "frame:candidate" : "frame:cancel-or-timeout", generation);
+            result.success(ready);
+        }));
         mainHandler.postDelayed(() -> sourceFrames.cancel(generation), 3000);
     }
 
     public void cancelSourceFrame(long generation) {
+        VideoDiagnostics.record(this, "frame:cancel", generation);
         sourceFrames.cancel(generation);
     }
 
     /** PixelCopy scales on the native side; no mpv readback or PNG loop on Dart UI. */
     public void captureFrame(MethodChannel.Result result) {
+        VideoDiagnostics.record(this, "capture:start", 0);
         if (disposed || surface == null || !surface.isValid() || outputWidth <= 1 || outputHeight <= 1) {
             result.success(null);
             return;
@@ -91,16 +97,21 @@ public class VideoOutput {
                 Math.max(1, (int) (outputHeight * scale)), Bitmap.Config.ARGB_8888);
         final AtomicBoolean completed = new AtomicBoolean(false);
         mainHandler.postDelayed(() -> {
-            if (completed.compareAndSet(false, true)) result.success(null);
+            if (completed.compareAndSet(false, true)) {
+                VideoDiagnostics.record(this, "capture:timeout", 0);
+                result.success(null);
+            }
         }, 180);
         try {
             PixelCopy.request(surface, bitmap, status -> {
+                VideoDiagnostics.record(this, "capture:pixel-copy", status);
                 byte[] bytes = null;
                 try {
                     if (status == PixelCopy.SUCCESS) {
                         final ByteArrayOutputStream output = new ByteArrayOutputStream();
                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
                         bytes = output.toByteArray();
+                        VideoDiagnostics.record(this, "capture:png-encoded", bytes.length);
                     }
                 } catch (Throwable error) {
                     bytes = null;
@@ -109,6 +120,7 @@ public class VideoOutput {
                 }
                 final byte[] data = bytes;
                 mainHandler.post(() -> {
+                    VideoDiagnostics.record(this, "capture:reply", data == null ? 0 : data.length);
                     if (completed.compareAndSet(false, true)) result.success(disposed ? null : data);
                 });
             }, copyHandler);
@@ -119,6 +131,7 @@ public class VideoOutput {
     }
 
     VideoOutput(long handle, MethodChannel channelReference, TextureRegistry textureRegistryReference) {
+        VideoDiagnostics.record(this, "surface:output-create", 0);
         this.handle = handle;
         this.channelReference = channelReference;
         this.textureRegistryReference = textureRegistryReference;
@@ -154,7 +167,10 @@ public class VideoOutput {
                 surfaceTextureEntry.surfaceTexture().setOnFrameAvailableListener((texture) -> {
                     synchronized (lock) {
                         try {
-                            if (!disposed && outputWidth > 1 && outputHeight > 1) sourceFrames.frame();
+                            if (!disposed && outputWidth > 1 && outputHeight > 1) {
+                                VideoDiagnostics.record(this, "surface:frame-callback", 0);
+                                sourceFrames.frame();
+                            }
                             if (!waitUntilFirstFrameRenderedNotify) {
                                 waitUntilFirstFrameRenderedNotify = true;
                                 final HashMap<String, Object> data = new HashMap<>();
@@ -245,6 +261,7 @@ public class VideoOutput {
     }
 
     public long createSurface() {
+        VideoDiagnostics.record(this, "surface:create-start", 0);
         synchronized (lock) {
             // Delete previous android.view.Surface & object reference.
             try {
@@ -253,6 +270,7 @@ public class VideoOutput {
                     // decoder-owned Surface can stall the whole route. Keep
                     // the last pixels until replacement frames arrive; Dart
                     // retains the old page and gates the new source's pixels.
+                    VideoDiagnostics.record(this, "surface:release", 0);
                     surface.release();
                     surface = null;
                 }
@@ -270,6 +288,7 @@ public class VideoOutput {
             } catch (Throwable e) {
                 e.printStackTrace();
             }
+            VideoDiagnostics.record(this, "surface:create-end", 0);
             return wid;
         }
     }

@@ -775,6 +775,10 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     );
     try {
       if (!await request.start(canAttach)) return;
+      recordVideoTransition(this, 'source:acquired', {
+        'generation': sourceGeneration,
+        'routeOwner': identityHashCode(transitionOwner),
+      });
       _processing = true;
       if (_videoPlayerController case final oldPlayer?
           when _frameWaitGeneration != 0) {
@@ -1100,6 +1104,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
 
     assert(!isLive || seekTo == null);
+    recordVideoTransition(this, 'source:output-owner', {'generation': sourceGeneration, 'outputOwner': identityHashCode(player.handle)});
     traceVideoTransition(
       this,
       'source:open-start generation=$sourceGeneration',
