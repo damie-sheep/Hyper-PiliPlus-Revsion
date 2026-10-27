@@ -27,15 +27,11 @@
 
 <br/>
 
-## 适配平台
+## 平台维护范围
 
-- [x] Android
-- [x] iOS
-- [x] Pad
-- [x] Windows
-- [x] Linux
+本分支保留 Android 与 iOS 平台工程，当前开发以 Android 为主，iOS 留待后续开发和验证。平板适配属于对应移动平台的界面适配范围。Windows、Linux、macOS 工程及其专属构建、打包流程已移除；共享 Dart 代码、资源与依赖暂时保留。
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/piliplus.svg)](https://repology.org/project/piliplus/versions)
+GitHub Actions 的 Build 入口仅提供 Android 和 iOS 选项；iOS 构建需要 macOS 运行环境，`macos` runner 不代表支持 macOS 桌面应用。现有 iOS 构建流程予以保留，本次清理不代表 iOS 构建或设备验收通过。
 
 ## refactor
 

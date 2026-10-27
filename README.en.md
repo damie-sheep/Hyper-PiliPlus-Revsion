@@ -28,6 +28,8 @@
 
 ## Download
 
+This branch retains Android and iOS platform projects, with current development focused on Android and iOS reserved for future development and validation. Windows, Linux, and macOS desktop projects and their dedicated build workflows have been removed. Shared Dart code, assets, and dependencies remain unchanged. The retained iOS workflow runs on macOS; this does not provide macOS desktop application support or confirm iOS build validation.
+
 Download a build from [Releases](https://github.com/bggRGjQaUbCoE/PiliPlus/releases), or clone the repository and build it locally.
 
 ## Disclaimer
