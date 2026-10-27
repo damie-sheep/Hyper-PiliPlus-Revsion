@@ -47,6 +47,24 @@ subprojects {
                 targetCompatibility = JavaVersion.VERSION_17
             }
 
+            if (project.name == "media_kit_video") {
+                // Preserve Pub/SDK caches. Fail closed if the pinned plugin changes.
+                val patchRoot = rootProject.file("third_party/media-kit-video")
+                @Suppress("UNCHECKED_CAST")
+                val manifest = groovy.json.JsonSlurper().parse(patchRoot.resolve("upstream.json")) as Map<String, Any>
+                @Suppress("UNCHECKED_CAST")
+                val files = manifest["files"] as Map<String, String>
+                files.forEach { (path, expected) ->
+                    val original = project.file(path)
+                    val actual = java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(original.readBytes()).joinToString("") { "%02x".format(it) }
+                    check(actual == expected) { "media_kit_video source changed: $path; review the repository overlay" }
+                }
+                androidExtension.sourceSets.getByName("main").java.setSrcDirs(
+                    listOf(patchRoot.resolve("src/main/java"))
+                )
+            }
+
             project.tasks.withType<KotlinCompile>().configureEach {
                 compilerOptions {
                     jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)

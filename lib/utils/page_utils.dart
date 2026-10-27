@@ -588,6 +588,9 @@ abstract final class PageUtils {
     }
     final navigator = Get.key.currentState;
     if (navigator == null) return null;
+    arguments['videoTransitionMode'] = pendingVideoTransitionMode(
+      arguments['heroTag']!,
+    );
     final route = VideoPageTransitionRoute<void>(
       settings: RouteSettings(name: '/videoV', arguments: arguments),
       builder: (_) => const VideoDetailPageV(),

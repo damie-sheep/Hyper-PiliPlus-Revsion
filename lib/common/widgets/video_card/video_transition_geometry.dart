@@ -2,6 +2,8 @@ import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/animation.dart';
 
+enum VideoTransitionMode { homeCard, detailRelated }
+
 /// One coordinate system for both directions and interrupted gestures. Track
 /// intervals refer to visible expansion, rather than to elapsed route time.
 class VideoTransitionGeometry {
@@ -9,19 +11,26 @@ class VideoTransitionGeometry {
     required this.source,
     required this.viewport,
     required double progress,
-  }) : expansion = Curves.easeInOutCubic.transform(progress.clamp(0, 1));
+    this.mode = VideoTransitionMode.homeCard,
+  }) : expansion =
+           (mode == VideoTransitionMode.detailRelated
+                   ? Curves.easeInOut
+                   : Curves.easeInOutCubic)
+               .transform(progress.clamp(0, 1));
 
   final Rect source;
   final Size viewport;
   final double expansion;
+  final VideoTransitionMode mode;
 
   Rect get container => Rect.lerp(source, Offset.zero & viewport, expansion)!;
   double get scale => container.width / viewport.width;
   double get radius => 12 * (1 - expansion) + 64 * expansion * (1 - expansion);
   double get remainderOpacity => 1 - _track(0.04, 0.28);
   double get coverOpacity => 1 - _track(0.05, 0.28);
-  double get sourceTitleOpacity => 1 - _track(0.20, 0.50);
-  double get targetTitleOpacity => _track(0.32, 0.50);
+  double get sourceTitleOpacity => 1 - _track(0, 0.50);
+  double get targetTitleOpacity => _track(0.18, 0.50);
+  double get relatedSourceOpacity => 1 - _track(0, 0.12);
   double get titleTravel => _track(0, 0.30);
   double get titleScale => lerpDouble(1, 1.30, _track(0, 0.50))!;
   double get informationOpacity => _track(0, 0.32);

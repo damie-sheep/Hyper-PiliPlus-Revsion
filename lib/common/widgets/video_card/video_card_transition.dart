@@ -13,6 +13,9 @@ import 'package:flutter/scheduler.dart' show SchedulerPhase;
 import 'package:get/get.dart' show GetPageRoute;
 import 'package:material_ui/material_ui.dart';
 
+export 'package:PiliPlus/common/widgets/video_card/video_transition_geometry.dart'
+    show VideoTransitionMode;
+
 const int videoCoverDecodeWidth = 640;
 const Duration videoPageTransitionDuration = Duration(
   milliseconds: int.fromEnvironment('VIDEO_TRANSITION_MS', defaultValue: 400),
@@ -21,6 +24,15 @@ const Duration videoPageReverseTransitionDuration = videoPageTransitionDuration;
 ({Object tag, _VideoCardHeroState source, DateTime time})? _pendingTransition;
 final _enteringVideoPages = <Object, Completer<bool>>{};
 final _returningVideoPages = <Future<void>>{};
+final _coveringVideoPages = <Future<void>>{};
+
+/// Only the capture-failure fallback waits for coverage. Normal source changes
+/// run alongside the animation once the previous page has a retained frame.
+Future<void> waitForVideoPageCoverage() async {
+  while (_coveringVideoPages.isNotEmpty) {
+    await Future.wait(_coveringVideoPages.toList());
+  }
+}
 
 /// The media player is shared by stacked details. Restoring the previous
 /// source before the outgoing carrier disappears clears its closing texture.
@@ -41,6 +53,11 @@ bool hasPendingVideoCardTransition(Object tag) {
       pending.source.widget.tag == tag &&
       DateTime.now().difference(pending.time) < const Duration(seconds: 2);
 }
+
+VideoTransitionMode pendingVideoTransitionMode(Object tag) =>
+    hasPendingVideoCardTransition(tag)
+    ? _pendingTransition!.source.widget.mode
+    : VideoTransitionMode.homeCard;
 
 Color transitionBackgroundOf(BuildContext context) {
   Color? result;
@@ -70,12 +87,19 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   bool _gestureCommitted = false;
   AnimationStatusListener? _gestureCompletion;
   final _entryReady = Completer<bool>();
+  final _coverageReady = Completer<void>();
   Object? get _entryTag => (settings.arguments as Map?)?['heroTag'];
+  VideoTransitionMode get mode =>
+      (settings.arguments as Map?)?['videoTransitionMode']
+          as VideoTransitionMode? ??
+      VideoTransitionMode.homeCard;
 
   @override
   void install() {
     super.install();
     traceVideoTransition(_entryTag, 'route:install');
+    beginVideoTransitionTrace(_entryTag);
+    _coveringVideoPages.add(_coverageReady.future);
     if (_entryTag case final tag?) _enteringVideoPages[tag] = _entryReady;
     controller
       ?..addStatusListener(_entryStatus)
@@ -83,6 +107,8 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   }
 
   void _entryProgress() {
+    traceVideoTransitionProgress(_entryTag, controller?.value ?? 1);
+    if ((controller?.value ?? 1) >= 0.9) _finishCoverage();
     if (controller?.status == AnimationStatus.forward &&
         controller!.value >= 0.08) {
       _finishEntry(true);
@@ -91,17 +117,31 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
 
   void _entryStatus(AnimationStatus status) {
     traceVideoTransition(_entryTag, 'route:${status.name}');
-    if (status == AnimationStatus.completed) _finishEntry(true);
+    if (status == AnimationStatus.completed) {
+      _finishEntry(true);
+      endVideoTransitionTrace(_entryTag);
+    } else if (status == AnimationStatus.reverse ||
+        status == AnimationStatus.forward) {
+      beginVideoTransitionTrace(_entryTag);
+    } else if (status == AnimationStatus.dismissed) {
+      endVideoTransitionTrace(_entryTag);
+    }
   }
 
   void _finishEntry(bool entered) {
     if (!_entryReady.isCompleted) _entryReady.complete(entered);
   }
 
+  void _finishCoverage() {
+    if (!_coverageReady.isCompleted) _coverageReady.complete();
+    _coveringVideoPages.remove(_coverageReady.future);
+  }
+
   @override
   bool didPop(T? result) {
     final popped = super.didPop(result);
     if (popped) {
+      _finishCoverage();
       _finishEntry(false);
       traceVideoTransition(_entryTag, 'route:pop');
       final leaving = completed.then<void>((_) {});
@@ -153,6 +193,8 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
 
   @override
   void dispose() {
+    _finishCoverage();
+    endVideoTransitionTrace(_entryTag);
     _finishEntry(false);
     controller
       ?..removeStatusListener(_entryStatus)
@@ -271,6 +313,10 @@ class _RenderTargetPart extends RenderProxyBox
   double get _opacity {
     final stage = _stage;
     if (stage?.snapshot == null) return 1;
+    if (part == VideoTransitionPart.title &&
+        stage!.mode == VideoTransitionMode.detailRelated) {
+      return stage.geometry.informationOpacity;
+    }
     return switch (part) {
       VideoTransitionPart.title
           when stage!.snapshot!.parts[VideoTransitionPart.title] != null =>
@@ -286,7 +332,8 @@ class _RenderTargetPart extends RenderProxyBox
     final stage = _stage;
     if (part != VideoTransitionPart.cover ||
         stage?.snapshot == null ||
-        stage!.geometry.expansion == 1) {
+        stage!.mode == VideoTransitionMode.detailRelated ||
+        stage.geometry.expansion == 1) {
       return null;
     }
     final slot = stage.mediaRect;
@@ -402,10 +449,12 @@ class VideoCardHero extends StatefulWidget {
     required this.tag,
     required this.surfaceColor,
     required this.child,
+    this.mode = VideoTransitionMode.homeCard,
   });
   final Object tag;
   final Color surfaceColor;
   final Widget child;
+  final VideoTransitionMode mode;
 
   @override
   State<VideoCardHero> createState() => _VideoCardHeroState();
@@ -462,7 +511,7 @@ class _VideoCardHeroState extends State<VideoCardHero> {
         }
       }
 
-      box.visitChildren(visit);
+      if (widget.mode == VideoTransitionMode.homeCard) box.visitChildren(visit);
       return _CardSnapshot(image, bounds, widget.surfaceColor, parts);
     } catch (error) {
       assert(() {
@@ -542,6 +591,9 @@ class VideoTransitionLayer extends StatelessWidget {
           source: const Rect.fromLTWH(0, 0, 1, 1),
           viewport: const Size(1, 1),
           progress: animation.value,
+          mode: route is VideoPageTransitionRoute
+              ? route.mode
+              : VideoTransitionMode.homeCard,
         );
         final opacity = frame.lowerOpacity;
         return sliver
@@ -801,6 +853,10 @@ class _VideoPageHeroTargetState extends State<VideoPageHeroTarget> {
             progress: animation?.value ?? 1,
             fallback: _fallback,
             color: widget.surfaceColor,
+            traceOwner: widget.tag,
+            mode: _route is VideoPageTransitionRoute
+                ? (_route as VideoPageTransitionRoute).mode
+                : VideoTransitionMode.homeCard,
             child: child!,
           );
         },
@@ -817,6 +873,8 @@ class _VideoStage extends SingleChildRenderObjectWidget {
     required this.progress,
     required this.fallback,
     required this.color,
+    required this.mode,
+    required this.traceOwner,
     required super.child,
   });
   final _CardSnapshot? snapshot;
@@ -824,6 +882,8 @@ class _VideoStage extends SingleChildRenderObjectWidget {
   final double progress;
   final bool fallback;
   final Color color;
+  final VideoTransitionMode mode;
+  final Object traceOwner;
 
   @override
   RenderObject createRenderObject(BuildContext context) =>
@@ -842,6 +902,9 @@ class _RenderVideoStage extends RenderProxyBox {
   double _progress = 1;
   bool _fallback = false;
   Color _color = Colors.transparent;
+  VideoTransitionMode mode = VideoTransitionMode.homeCard;
+  bool _tracedFirstPaint = false;
+  Object? _traceOwner;
 
   void configure(_VideoStage widget) {
     snapshot = widget.snapshot;
@@ -849,6 +912,8 @@ class _RenderVideoStage extends RenderProxyBox {
     _progress = widget.progress;
     _fallback = widget.fallback;
     _color = widget.color;
+    mode = widget.mode;
+    _traceOwner = widget.traceOwner;
     for (final target in targets.values) {
       target
         ..markNeedsPaint()
@@ -867,6 +932,7 @@ class _RenderVideoStage extends RenderProxyBox {
     ),
     viewport: size,
     progress: _progress,
+    mode: mode,
   );
 
   Matrix4 get _transform {
@@ -918,6 +984,10 @@ class _RenderVideoStage extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    if (!_tracedFirstPaint) {
+      _tracedFirstPaint = true;
+      traceVideoTransition(_traceOwner, 'stage:first-paint mode=${mode.name}');
+    }
     final source = snapshot;
     if (source == null) {
       if (_fallback && _progress < 1) {
@@ -978,6 +1048,11 @@ class _RenderVideoStage extends RenderProxyBox {
     final rect = frame.container;
     final cardScale = rect.width / source.rect.width;
     final card = rect.topLeft & (source.rect.size * cardScale);
+    if (mode == VideoTransitionMode.detailRelated) {
+      // The row locates the new media panel; its cover never flies to the player.
+      _draw(canvas, source.image, card, frame.relatedSourceOpacity);
+      return;
+    }
     final sourceShift =
         (_sourceRect ?? source.rect).topLeft -
         source.rect.topLeft -

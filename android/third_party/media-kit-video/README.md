@@ -1,0 +1,13 @@
+# Android video Surface extension
+
+This directory contains the four Java sources from the MIT-licensed `media_kit_video` at the exact commit recorded in `upstream.json`, plus a small `SourceFrameGate`. Original copyright headers and `LICENSE` are retained. `android/build.gradle.kts` verifies every upstream Java source hash and redirects only this plugin's Java source set here. Dart/package resolution and Pub/Flutter caches stay unchanged; an upstream source change deliberately fails the build until this overlay is reviewed.
+
+The extension adds three method calls on the existing plugin channel: `CaptureFrame` uses asynchronous Android PixelCopy, bounds the image's longest side to 640 pixels and encodes PNG on a background handler; `AwaitSourceFrame` arms a fresh generation after native open and waits for two later valid output callbacks; `CancelSourceFrame` cancels that generation only. Capture has a 180 ms native timeout; each frame wait has a 3 s timeout, and a still-current Dart owner can re-arm after a timeout. A new open or disposal invalidates old waiters. A missing frame listener returns null, which is recorded as a degraded fallback rather than proof of native rendering.
+
+The one process-level PixelCopy worker is shared by outputs. Each Bitmap is recycled after its callback, including late results; method completion is atomic so timeout and copy success cannot reply twice. Pending frame completions run on the main handler. Frame callbacks remain candidates: output queues and Flutter composition still require device-level verification. These signals are never named actual on-screen first frames in product behavior.
+
+Source replacement no longer calls `lockCanvas` to clear a decoder-owned Surface on the method-channel main thread. The old page's retained image and the new source's visibility gate already own that handoff; synchronously locking the old canvas can stall navigation. New Surface creation/release and final output disposal retain their existing lifecycle.
+
+Source replacement can be rolled back by reverting the media-kit block in the root Android Gradle file together with the app's bridge callers. Do not remove the native overlay while leaving the Dart calls as if the backend supported them.
+
+The platform-independent production gate is checked with `javac`/`java` against `src/test/java/.../SourceFrameGateTest.java`: pre-arm frames, distinct sources, replacement, stale cancellation, same-token rejection, timeout and disposal. Android compilation/build additionally verifies the real plugin integration; neither check proves PixelCopy or Texture behavior on a physical device.

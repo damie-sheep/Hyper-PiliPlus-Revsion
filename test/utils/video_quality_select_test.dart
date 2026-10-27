@@ -28,6 +28,61 @@ PlayUrlModel _playUrl(List<VideoQuality> videoIds) => PlayUrlModel.fromJson({
 });
 
 void main() {
+  test(
+    'unrelated missing quality does not block an available preferred stream',
+    () {
+      final data = _playUrl([VideoQuality.dolbyVision, VideoQuality.high1080]);
+      data.acceptQuality!.add(VideoQuality.clear480.code);
+      data.supportFormats!.add(
+        FormatItem.fromJson({
+          'quality': VideoQuality.clear480.code,
+          'codecs': VideoDecodeFormatType.AV1.codes,
+        }),
+      );
+      expect(data.missingVideoQualityBelowHighest, VideoQuality.clear480.code);
+      expect(
+        VideoUtils.needsInitialQualitySupplement(
+          data,
+          VideoQuality.high1080.code,
+          [.AV1],
+        ),
+        isFalse,
+      );
+      expect(
+        VideoUtils.needsInitialQualitySupplement(
+          data,
+          VideoQuality.clear480.code,
+          [.AV1],
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test('missing preferred codec keeps the initial supplement', () {
+    final data = _playUrl([VideoQuality.dolbyVision, VideoQuality.high1080]);
+    data.supportFormats!.add(
+      FormatItem.fromJson({
+        'quality': VideoQuality.clear480.code,
+        'codecs': VideoDecodeFormatType.AV1.codes,
+      }),
+    );
+    data.supportFormats!
+        .firstWhere((f) => f.quality == VideoQuality.high1080.code)
+        .codecs = [
+      ...VideoDecodeFormatType.AVC.codes,
+      ...VideoDecodeFormatType.AV1.codes,
+    ];
+    expect(
+      VideoUtils.needsInitialQualitySupplement(
+        data,
+        VideoQuality.high1080.code,
+        [.AVC, .AV1],
+      ),
+      isTrue,
+    );
+  });
+
   test('find target quality', () {
     final playUrl = _playUrl(VideoQuality.values);
     final dash = playUrl.dash!;

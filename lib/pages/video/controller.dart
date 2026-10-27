@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' show min;
 import 'dart:ui';
 
@@ -68,6 +69,7 @@ import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:PiliPlus/utils/theme_utils.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:PiliPlus/utils/video_utils.dart';
+import 'package:PiliPlus/utils/video_transition_trace.dart';
 import 'package:collection/collection.dart';
 import 'package:dio/dio.dart' show Options;
 import 'package:extended_nested_scroll_view/extended_nested_scroll_view.dart'
@@ -117,6 +119,8 @@ class VideoDetailController extends GetxController
   // 请求返回的视频信息
   late PlayUrlModel data;
   final RxBool videoState = false.obs;
+  final RxBool videoFrameReady = false.obs;
+  bool isForeground = true;
 
   /// 播放器配置 画质 音质 解码格式
   final Rxn<VideoQuality> currentVideoQa = Rxn<VideoQuality>();
@@ -733,7 +737,10 @@ class VideoDetailController extends GetxController
     bool? autoplay,
     bool autoFullScreenFlag = false,
   }) async {
-    if (!await waitForVideoPageEntry(heroTag) || isClosed) return;
+    if (!await waitForVideoPageEntry(heroTag) || isClosed || !isForeground) {
+      return;
+    }
+    videoFrameReady.value = false;
     Duration? seek = defaultST ?? playedTime;
     if (seek == .zero) seek = null;
     seek ??= getFirstSegment();
@@ -765,12 +772,18 @@ class VideoDetailController extends GetxController
       onInit: () {
         if (isClosed) return;
         videoState.value = true;
+        if (!Platform.isAndroid) videoFrameReady.value = true;
         setSubtitle(vttSubtitlesIndex.value);
       },
       width: firstVideo.width,
       height: firstVideo.height,
       volume: volume,
       autoFullScreenFlag: autoFullScreenFlag,
+      canAttach: () => !isClosed && isForeground,
+      onSourceFrame: () {
+        if (!isClosed && isForeground) videoFrameReady.value = true;
+      },
+      transitionOwner: heroTag,
     );
 
     if (isClosed) return;
@@ -790,6 +803,19 @@ class VideoDetailController extends GetxController
     }
 
     defaultST = null;
+  }
+
+  Future<void> preparePlayerForEntry() async {
+    if (!_autoPlay.value && !plPlayerController.preInitPlayer) return;
+    if (!await waitForVideoPageEntry(heroTag) || isClosed || !isForeground) {
+      return;
+    }
+    try {
+      await plPlayerController.prepareForVideo();
+    } catch (_) {
+      // The regular source initialization reports/retries preparation failures.
+      traceVideoTransition(heroTag, 'source:early-prepare-failed');
+    }
   }
 
   bool isQuerying = false;
@@ -821,12 +847,34 @@ class VideoDetailController extends GetxController
   }
 
   Future<void> _supplementVideoQualities() async {
-    final quality = data.missingVideoQualityBelowHighest;
+    final initialData = data;
+    final initialCid = cid.value;
+    final quality = initialData.missingVideoQualityBelowHighest;
     if (quality == -1) return;
     final result = await _getVideoUrl(quality);
+    if (isClosed || !identical(initialData, data) || initialCid != cid.value) {
+      return;
+    }
     if (result case Success(:final response)) {
       data.dash!.video!.merge(response.dash?.video);
     }
+  }
+
+  Future<void> _supplementAfterFirstFrame(PlayUrlModel initialData) async {
+    try {
+      if (!videoFrameReady.value) {
+        await videoFrameReady.stream
+            .firstWhere((ready) => ready)
+            .timeout(const Duration(seconds: 3));
+      }
+    } catch (_) {
+      // Manual playback may not produce a frame. Still make other qualities
+      // available after the initial request/open path has been given priority.
+    }
+    if (isClosed || !isForeground || !identical(initialData, data)) return;
+    traceVideoTransition(heroTag, 'request:deferred-quality-start');
+    await _supplementVideoQualities();
+    traceVideoTransition(heroTag, 'request:deferred-quality-end');
   }
 
   Volume? volume;
@@ -837,6 +885,7 @@ class VideoDetailController extends GetxController
     bool fromReset = false,
     bool autoFullScreenFlag = false,
   }) async {
+    traceVideoTransition(heroTag, 'request:play-url-start');
     if (isFileSource) {
       return initPlayerIfNeeded(autoFullScreenFlag);
     }
@@ -871,6 +920,7 @@ class VideoDetailController extends GetxController
       await _queryVideoUrl(fromReset, autoFullScreenFlag);
     } finally {
       isQuerying = false;
+      traceVideoTransition(heroTag, 'request:play-url-end');
     }
   }
 
@@ -904,7 +954,16 @@ class VideoDetailController extends GetxController
 
     if (result case Success(:final response)) {
       data = response;
-      if (data.dash != null) await _supplementVideoQualities();
+      if (data.dash != null &&
+          VideoUtils.needsInitialQualitySupplement(
+            data,
+            plPlayerController.cacheVideoQa!,
+            preferCodecs,
+          )) {
+        traceVideoTransition(heroTag, 'request:quality-supplement-start');
+        await _supplementVideoQualities();
+        traceVideoTransition(heroTag, 'request:quality-supplement-end');
+      }
       if (isClosed) return;
 
       languages.value = data.language?.items;
@@ -1011,6 +1070,9 @@ class VideoDetailController extends GetxController
         audioUrl = '';
       }
       await initPlayerIfNeeded(autoFullScreenFlag);
+      if (!isClosed && data.missingVideoQualityBelowHighest != -1) {
+        unawaited(_supplementAfterFirstFrame(data));
+      }
     } else {
       _autoPlay.value = false;
       videoState.value = false;

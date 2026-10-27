@@ -65,6 +65,17 @@ class _Pixels {
     return Color.fromARGB(bytes[i + 3], bytes[i], bytes[i + 1], bytes[i + 2]);
   }
 
+  int get sourceInkContrast {
+    var peak = 0;
+    for (var i = 0; i < bytes.length; i += 4) {
+      final red = bytes[i] - bytes[i + 1];
+      final blue = bytes[i + 2] - bytes[i + 1];
+      final contrast = red < blue ? red : blue;
+      if (contrast > peak) peak = contrast;
+    }
+    return peak;
+  }
+
   int darkPixels(Rect rect) {
     var count = 0;
     for (var y = rect.top.ceil(); y < rect.bottom.floor(); y++) {
@@ -132,6 +143,8 @@ Future<Rect> _open(
   double textScale = 1,
   bool dark = false,
   bool markers = true,
+  VideoTransitionMode mode = VideoTransitionMode.homeCard,
+  double playerHeight = 225,
 }) async {
   tester.view.physicalSize = const Size(400, 800);
   tester.view.devicePixelRatio = 1;
@@ -165,6 +178,8 @@ Future<Rect> _open(
           sourceVisible: sourceVisible,
           sourceTop: sourceTop,
           markers: markers,
+          mode: mode,
+          playerHeight: playerHeight,
         ),
       ),
     ),
@@ -415,6 +430,7 @@ void main() {
             source: horizontalSource,
             viewport: const Size(400, 800),
             progress: routeB.animation!.value,
+            mode: VideoTransitionMode.detailRelated,
           );
           final slot = frame.mapRect(const Rect.fromLTWH(0, 24, 400, 225));
           expect(shot.at(slot.center), _playerColor);
@@ -615,7 +631,7 @@ void main() {
             matching: find.text('KNOWN TITLE'),
           )
           .last;
-      await _seek(tester, 0.40);
+      await _seek(tester, 0.32);
       final frame = await _pixels(tester, 'title-handoff');
       final sourceInk = frame.magentaBounds()!;
       final targetRect = tester.getRect(target);
@@ -625,6 +641,71 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('home title loses contrast while it travels', (tester) async {
+    await _open(tester);
+    var previous = 256;
+    for (final expansion in [0.0, 0.1, 0.2, 0.3]) {
+      await _seek(tester, expansion);
+      final shot = await _pixels(tester, 'title-fade-$expansion');
+      expect(shot.sourceInkContrast, lessThan(previous));
+      expect(shot.sourceInkContrast, greaterThan(25));
+      previous = shot.sourceInkContrast;
+    }
+    await _seek(tester, 0.5);
+    expect((await _pixels(tester)).sourceInkContrast, 0);
+  });
+
+  for (final height in [225.0, 600.0]) {
+    testWidgets(
+      'related panel has continuous media without cover flight height=$height',
+      (tester) async {
+        final source = await _open(
+          tester,
+          mode: VideoTransitionMode.detailRelated,
+          playerHeight: height,
+        );
+        expect(pendingVideoTransitionMode(_tag), VideoTransitionMode.homeCard);
+        var previousWidth = 0.0;
+        var previousTop = double.infinity;
+        for (var ms = 112; ms <= 400; ms += 16) {
+          final progress = ms / 400;
+          _route.seek(progress);
+          await tester.pump();
+          await tester.pump();
+          final geometry = VideoTransitionGeometry(
+            source: source,
+            viewport: const Size(400, 800),
+            progress: progress,
+            mode: VideoTransitionMode.detailRelated,
+          );
+          final shot = await _pixels(tester, 'related-$height-$ms');
+          expect(
+            shot.at(geometry.mapPoint(const Offset(200, 60))),
+            _playerColor,
+          );
+          expect(geometry.container.width, greaterThanOrEqualTo(previousWidth));
+          expect(geometry.container.top, lessThanOrEqualTo(previousTop));
+          // The source cover is orange. It must never continue flying after
+          // the initial row residual has gone; only live media paints here.
+          expect(shot.at(geometry.container.center), isNot(Colors.orange));
+          previousWidth = geometry.container.width;
+          previousTop = geometry.container.top;
+        }
+        expect(_pageCreations, 1);
+        _route
+          ..handleStartBackGesture(progress: 1)
+          ..handleUpdateBackGestureProgress(progress: 0.5);
+        await tester.pump();
+        _route.handleCancelBackGesture();
+        await tester.pumpAndSettle();
+        Navigator.of(tester.element(find.byType(_Details))).pop();
+        await tester.pumpAndSettle();
+        expect((await _pixels(tester)).magentaBounds(), isNotNull);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   for (final loadAt in [0.1, 0.4, 1.0]) {
     testWidgets(
@@ -943,13 +1024,16 @@ void main() {
 }
 
 class _SeekableRoute extends VideoPageTransitionRoute<void> {
-  _SeekableRoute({required super.builder, Object tag = _tag})
-    : super(
-        settings: RouteSettings(
-          name: '/transition-probe',
-          arguments: {'heroTag': tag},
-        ),
-      );
+  _SeekableRoute({
+    required super.builder,
+    Object tag = _tag,
+    VideoTransitionMode mode = VideoTransitionMode.homeCard,
+  }) : super(
+         settings: RouteSettings(
+           name: '/transition-probe',
+           arguments: {'heroTag': tag, 'videoTransitionMode': mode},
+         ),
+       );
   void seek(double value) {
     controller!
       ..stop()
@@ -1024,12 +1108,16 @@ class _StackProbeState extends State<_StackProbe> {
               height: index == 0 ? 184 : 110,
               child: VideoCardHero(
                 tag: 'stack-$index',
+                mode: index == 0
+                    ? VideoTransitionMode.homeCard
+                    : VideoTransitionMode.detailRelated,
                 surfaceColor: Colors.white,
                 child: GestureDetector(
                   key: ValueKey('stack-source-$index'),
                   onTap: () {
                     _route = _SeekableRoute(
                       tag: 'stack-$index',
+                      mode: pendingVideoTransitionMode('stack-$index'),
                       builder: (_) =>
                           _StackProbe(index: index + 1, mounts: widget.mounts),
                     );
@@ -1076,6 +1164,8 @@ class _Source extends StatelessWidget {
     this.sourceVisible,
     this.sourceTop,
     this.markers = true,
+    this.mode = VideoTransitionMode.homeCard,
+    this.playerHeight = 225,
   });
   final bool right;
   final bool nested;
@@ -1084,6 +1174,8 @@ class _Source extends StatelessWidget {
   final ValueNotifier<bool>? sourceVisible;
   final ValueNotifier<double>? sourceTop;
   final bool markers;
+  final VideoTransitionMode mode;
+  final double playerHeight;
 
   @override
   Widget build(BuildContext context) {
@@ -1095,11 +1187,17 @@ class _Source extends StatelessWidget {
       height: 184,
       child: VideoCardHero(
         tag: _tag,
+        mode: mode,
         surfaceColor: Colors.white,
         child: GestureDetector(
           onTap: () {
             _route = _SeekableRoute(
-              builder: (_) => _Details(loaded: loaded, player: player),
+              mode: pendingVideoTransitionMode(_tag),
+              builder: (_) => _Details(
+                loaded: loaded,
+                player: player,
+                playerHeight: playerHeight,
+              ),
             );
             Navigator.of(context).push(_route);
           },
@@ -1175,10 +1273,16 @@ class _Source extends StatelessWidget {
 }
 
 class _Details extends StatefulWidget {
-  const _Details({this.loaded, this.player, this.tag = _tag});
+  const _Details({
+    this.loaded,
+    this.player,
+    this.tag = _tag,
+    this.playerHeight = 225,
+  });
   final Object tag;
   final ValueNotifier<bool>? loaded;
   final ValueNotifier<Color>? player;
+  final double playerHeight;
   @override
   State<_Details> createState() => _DetailsState();
 }
@@ -1209,7 +1313,7 @@ class _DetailsState extends State<_Details> with RouteAware, RouteAwareMixin {
             left: 0,
             top: 24,
             width: 400,
-            height: 225,
+            height: widget.playerHeight,
             child: VideoTransitionTargetPart(
               part: VideoTransitionPart.cover,
               child: GestureDetector(
@@ -1224,12 +1328,12 @@ class _DetailsState extends State<_Details> with RouteAware, RouteAwareMixin {
               ),
             ),
           ),
-          const Positioned(
+          Positioned(
             left: 0,
             right: 0,
-            top: 249,
+            top: 24 + widget.playerHeight,
             height: 36,
-            child: VideoTransitionTargetPart(
+            child: const VideoTransitionTargetPart(
               part: VideoTransitionPart.tabs,
               child: ColoredBox(
                 color: Colors.cyan,
@@ -1240,7 +1344,7 @@ class _DetailsState extends State<_Details> with RouteAware, RouteAwareMixin {
           Positioned(
             left: 12,
             right: 12,
-            top: 300,
+            top: 75 + widget.playerHeight,
             child: widget.loaded == null
                 ? header(false)
                 : ValueListenableBuilder<bool>(

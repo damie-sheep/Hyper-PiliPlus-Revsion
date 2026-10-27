@@ -2103,16 +2103,23 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
             child: Obx(
               () {
                 final videoFit = plPlayerController.videoFit.value;
-                return Transform.flip(
-                  flipX: plPlayerController.flipX.value,
-                  flipY: plPlayerController.flipY.value,
-                  child: FittedBox(
-                    fit: videoFit.boxFit,
-                    alignment: widget.alignment,
-                    child: SimpleVideo(
-                      controller: plPlayerController.videoController!,
-                      fill: widget.fill,
-                      aspectRatio: videoFit.aspectRatio,
+                // Gate the media pixels only. Controls, loading and retry UI
+                // stay visible and usable while a new source is preparing.
+                final ready =
+                    widget.videoDetailController?.videoFrameReady.value ?? true;
+                return Opacity(
+                  opacity: ready ? 1 : 0,
+                  child: Transform.flip(
+                    flipX: plPlayerController.flipX.value,
+                    flipY: plPlayerController.flipY.value,
+                    child: FittedBox(
+                      fit: videoFit.boxFit,
+                      alignment: widget.alignment,
+                      child: SimpleVideo(
+                        controller: plPlayerController.videoController!,
+                        fill: widget.fill,
+                        aspectRatio: videoFit.aspectRatio,
+                      ),
                     ),
                   ),
                 );

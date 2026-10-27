@@ -2,7 +2,7 @@ import 'package:PiliPlus/models/common/video/audio_quality.dart';
 import 'package:PiliPlus/models/common/video/cdn_type.dart';
 import 'package:PiliPlus/models/common/video/video_decode_type.dart';
 import 'package:PiliPlus/models/video/play/url.dart'
-    show AudioItem, VideoItem, FormatItem;
+    show AudioItem, VideoItem, FormatItem, PlayUrlModel;
 import 'package:PiliPlus/models_new/live/live_room_play_info/codec.dart';
 import 'package:PiliPlus/utils/extension/iterable_ext.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
@@ -137,6 +137,38 @@ abstract final class VideoUtils {
     }
 
     return videoList.findTargetMedia((e) => e.id, preferQuality).quality.code;
+  }
+
+  /// Missing unrelated qualities must not hold up a fully selectable preferred
+  /// stream. Preserve the original supplement when quality/codec is incomplete.
+  static bool needsInitialQualitySupplement(
+    PlayUrlModel data,
+    int preferredQuality,
+    List<VideoDecodeFormatType> preferredCodecs,
+  ) {
+    if (data.missingVideoQualityBelowHighest == -1) return false;
+    final videos = data.dash?.video;
+    final formats = data.supportFormats;
+    if (videos == null ||
+        videos.isEmpty ||
+        formats == null ||
+        formats.isEmpty) {
+      return true;
+    }
+    final quality = _findAvailableVideoQuality(
+      videos,
+      data.acceptQuality,
+      preferredQuality,
+    );
+    final format = formats.where((item) => item.quality == quality).firstOrNull;
+    if (format?.codecs == null || format!.codecs!.isEmpty) return true;
+    final codec = selectCodec(format.codecs!, preferredCodecs);
+    return !videos.any(
+      (video) =>
+          video.id == quality &&
+          video.codecs != null &&
+          codec.codes.any(video.codecs!.startsWith),
+    );
   }
 
   static (

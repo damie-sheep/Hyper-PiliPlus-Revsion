@@ -1,6 +1,7 @@
 import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 import 'dart:math';
+import 'dart:ui' as ui show Image;
 
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
@@ -127,6 +128,40 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       videoDetailController.plPlayerController.pipNoDanmaku;
 
   bool isShowing = true;
+  bool _holdingLiveFrame = false;
+  final _retainedFrame = ValueNotifier<ui.Image?>(null);
+  late final Worker _frameReadyWorker;
+  BoxFit _retainedFit = BoxFit.contain;
+  double? _retainedAspect;
+  bool _retainedFlipX = false;
+  bool _retainedFlipY = false;
+
+  Future<void> _retainPlayerFrame(int generation) async {
+    await plPlayerController!.retainFrameBeforeSwitch((image) async {
+      if (!mounted || isShowing || generation != _restoreGeneration) {
+        image?.dispose();
+        return;
+      }
+      if (image != null) {
+        final previous = _retainedFrame.value;
+        _retainedFrame.value = image;
+        await WidgetsBinding.instance.endOfFrame;
+        previous?.dispose();
+        traceVideoTransition(heroTag, 'page:retained-surface-frame');
+      } else {
+        traceVideoTransition(
+          heroTag,
+          'page:retain-unavailable wait-for-coverage',
+        );
+        await WidgetsBinding.instance.endOfFrame;
+        await waitForVideoPageCoverage();
+      }
+      if (!mounted || isShowing || generation != _restoreGeneration) return;
+      _holdingLiveFrame = false;
+      videoDetailController.videoFrameReady.value = false;
+      videoDetailController.videoState.value = false;
+    });
+  }
 
   bool get isFullScreen =>
       videoDetailController.plPlayerController.isFullScreen.value;
@@ -152,6 +187,14 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     super.initState();
 
     videoDetailController = Get.put(VideoDetailController(), tag: heroTag);
+    _frameReadyWorker = ever(videoDetailController.videoFrameReady, (
+      bool ready,
+    ) {
+      if (!ready || !mounted || !isShowing) return;
+      final oldFrame = _retainedFrame.value;
+      _retainedFrame.value = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => oldFrame?.dispose());
+    });
 
     introController = _initIntroCtr();
 
@@ -179,6 +222,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   // 获取视频资源，初始化播放器
   void videoSourceInit() {
+    unawaited(videoDetailController.preparePlayerForEntry());
     videoDetailController.queryVideoUrl(autoFullScreenFlag: true);
     if (videoDetailController.autoPlay) {
       plPlayerController = videoDetailController.plPlayerController;
@@ -341,7 +385,11 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   @override
   void dispose() {
+    videoDetailController.isForeground = false;
+    _frameReadyWorker.dispose();
     _restoreGeneration++;
+    _retainedFrame.value?.dispose();
+    _retainedFrame.dispose();
     plPlayerController
       ?..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
@@ -383,8 +431,18 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   void didPushNext() {
     super.didPushNext();
     isShowing = false;
+    videoDetailController.isForeground = false;
     _restoreGeneration++;
-    traceVideoTransition(heroTag, 'page:background hide-shared-player');
+    _holdingLiveFrame =
+        videoDetailController.videoState.value && plPlayerController != null;
+    if (plPlayerController case final player?) {
+      _retainedFit = player.videoFit.value.boxFit;
+      _retainedAspect = player.videoFit.value.aspectRatio;
+      _retainedFlipX = player.flipX.value;
+      _retainedFlipY = player.flipY.value;
+    }
+    if (_holdingLiveFrame) unawaited(_retainPlayerFrame(_restoreGeneration));
+    traceVideoTransition(heroTag, 'page:background retain-shared-player');
 
     removeObserverMobile(this);
 
@@ -395,7 +453,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     introController.cancelTimer();
 
     videoDetailController
-      ..videoState.value = false
       ..cancelBlockListener()
       ..playerStatus = plPlayerController?.playerStatus
       ..brightness = plPlayerController?.brightness.value;
@@ -411,6 +468,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   @override
   void didPop() {
     super.didPop();
+    videoDetailController.isForeground = false;
+    _restoreGeneration++;
     traceVideoTransition(heroTag, 'page:pop pause-without-clearing-texture');
     unawaited(plPlayerController?.pause());
   }
@@ -425,6 +484,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     }
 
     isShowing = true;
+    _holdingLiveFrame = false;
+    videoDetailController.isForeground = true;
     traceVideoTransition(heroTag, 'page:foreground wait-for-return');
 
     addObserverMobile(this);
@@ -1250,7 +1311,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     child: Obx(
       () =>
           !videoDetailController.videoState.value ||
-              !isShowing ||
+              (!isShowing && !_holdingLiveFrame) ||
               !videoDetailController.autoPlay ||
               plPlayerController?.videoController == null
           ? const SizedBox.shrink()
@@ -1511,6 +1572,42 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
             width: width,
             height: height,
             child: plPlayer(width: width, height: height),
+          ),
+
+          Positioned.fill(
+            child: ValueListenableBuilder<ui.Image?>(
+              valueListenable: _retainedFrame,
+              builder: (_, image, _) => image == null
+                  ? const SizedBox.shrink()
+                  : Obx(
+                      () {
+                        final ready =
+                            videoDetailController.videoFrameReady.value;
+                        return !isShowing || !ready
+                            ? IgnorePointer(
+                                child: Transform.flip(
+                                  flipX: _retainedFlipX,
+                                  flipY: _retainedFlipY,
+                                  child: FittedBox(
+                                    fit: _retainedFit,
+                                    child: SizedBox(
+                                      width:
+                                          image.height *
+                                          (_retainedAspect ??
+                                              image.width / image.height),
+                                      height: image.height.toDouble(),
+                                      child: RawImage(
+                                        image: image,
+                                        fit: BoxFit.fill,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : const SizedBox.shrink();
+                      },
+                    ),
+            ),
           ),
 
           Obx(() {

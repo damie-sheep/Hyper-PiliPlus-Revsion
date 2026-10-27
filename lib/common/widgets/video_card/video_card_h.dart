@@ -24,11 +24,13 @@ class VideoCardH extends StatefulWidget {
     this.onTap,
     this.onViewLater,
     this.onRemove,
+    this.transitionMode = VideoTransitionMode.homeCard,
   });
   final HorizontalVideoModel videoItem;
   final ValueChanged<String>? onTap;
   final ValueChanged<int>? onViewLater;
   final VoidCallback? onRemove;
+  final VideoTransitionMode transitionMode;
 
   @override
   State<VideoCardH> createState() => _VideoCardHState();
@@ -75,6 +77,7 @@ class _VideoCardHState extends State<VideoCardH> {
         children: [
           VideoCardHero(
             tag: _heroTag,
+            mode: widget.transitionMode,
             surfaceColor: transitionBackgroundOf(context),
             child: Material(
               type: .transparency,

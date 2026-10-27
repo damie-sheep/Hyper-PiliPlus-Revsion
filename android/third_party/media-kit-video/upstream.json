@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/bggRGjQaUbCoE/media-kit",
+  "commit": "85f0a69ea66b100882b27a3375c72e5155375343",
+  "files": {
+    "src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java": "2db42dc040455b7a6fc7f506a8b47b131c89124db1c47c5c7c909a2dd2f4039d",
+    "src/main/java/com/alexmercerind/media_kit_video/Utils.java": "c6de318d97df2e14c71c17a56a594af51cfa8ee4ef36aa754083642af855e164",
+    "src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java": "411c5c5912a8bcbd95e90db0b974c5fd28181b595a6fd756b1bfec3077d41813",
+    "src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java": "c2cd529fdec78274ad1aa3890bb7dac050aed6d718c851bb1334f36eabce5f3d"
+  }
+}
