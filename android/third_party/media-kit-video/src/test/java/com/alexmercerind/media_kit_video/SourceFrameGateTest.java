@@ -41,5 +41,23 @@ public class SourceFrameGateTest {
         gate.arm(6, ready -> events.add("closed:" + ready));
         equal(events, Arrays.asList("A:true", "B:false", "C:true", "stale:false", "timeout:false", "dispose:false", "closed:false"));
         System.out.println("SourceFrameGate: 7 lifecycle scenarios passed");
+        final SourceFrameGate reasons = new SourceFrameGate();
+        final List<String> outcomes = new ArrayList<>();
+        reasons.armWithReason(1, outcomes::add);
+        reasons.cancel(1);
+        reasons.timeout(1);
+        reasons.armWithReason(2, outcomes::add);
+        reasons.timeout(2);
+        reasons.armWithReason(3, outcomes::add);
+        reasons.armWithReason(4, outcomes::add);
+        if (reasons.armWithReason(3, outcomes::add)) throw new AssertionError("stale accepted");
+        reasons.timeout(3);
+        reasons.frame();
+        reasons.frame();
+        reasons.armWithReason(5, outcomes::add);
+        reasons.close();
+        reasons.armWithReason(6, outcomes::add);
+        equal(outcomes, Arrays.asList("cancelled", "timeout", "superseded", "rejected", "candidate", "disposed", "disposed"));
+        System.out.println("SourceFrameGate: 7 explicit-outcome scenarios passed");
     }
 }

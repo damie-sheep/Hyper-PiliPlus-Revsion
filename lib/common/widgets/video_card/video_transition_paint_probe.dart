@@ -8,29 +8,33 @@ class VideoTransitionPaintProbe extends SingleChildRenderObjectWidget {
     super.key,
     required this.owner,
     required this.token,
+    this.event = 'retained:first-paint',
     required super.child,
   });
   final Object owner;
   final Object token;
+  final String event;
   @override
   RenderObject createRenderObject(BuildContext context) =>
-      _PaintProbe(owner, token);
+      _PaintProbe(owner, token, event);
   @override
   void updateRenderObject(
     BuildContext context,
     covariant RenderProxyBox renderObject,
-  ) => (renderObject as _PaintProbe).update(owner, token);
+  ) => (renderObject as _PaintProbe).update(owner, token, event);
 }
 
 class _PaintProbe extends RenderProxyBox {
-  _PaintProbe(this.traceOwner, this.token);
+  _PaintProbe(this.traceOwner, this.token, this.event);
   Object traceOwner;
   Object token;
+  String event;
   bool recorded = false;
-  void update(Object owner, Object token) {
+  void update(Object owner, Object token, String event) {
     traceOwner = owner;
-    if (!identical(this.token, token)) {
+    if (!identical(this.token, token) || this.event != event) {
       this.token = token;
+      this.event = event;
       recorded = false;
     }
   }
@@ -40,7 +44,7 @@ class _PaintProbe extends RenderProxyBox {
     super.paint(context, offset);
     if (videoTransitionTraceEnabled && !recorded) {
       recorded = true;
-      recordVideoTransition(traceOwner, 'retained:first-paint', {
+      recordVideoTransition(traceOwner, event, {
         'image': identityHashCode(token),
       });
     }

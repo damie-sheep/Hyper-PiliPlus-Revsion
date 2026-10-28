@@ -36,6 +36,41 @@ void main() {
     await VideoSurfaceBridge.cancelSourceFrame(1, 1);
   });
 
+  test('v2 proxy outcome preserves reason and output identity', () async {
+    messenger.setMockMethodCallHandler(
+      channel,
+      (call) async => {
+        'version': 2,
+        'generation': call.arguments['generation'],
+        'outputEpoch': 8,
+        'surfaceEpoch': 2,
+        'signal': 'diagnostic-consumed-proxy',
+        'sourceIdentityProven': false,
+        'status': 'cancelled',
+      },
+    );
+    final outcome = await VideoSurfaceBridge.waitForSourceFrameOutcome(1, 3);
+    expect(outcome.status, 'cancelled');
+    expect(outcome.fields['outputEpoch'], 8);
+    expect(outcome.fields['sourceIdentityProven'], isFalse);
+  });
+
+  test('old bool, wrong generation and unknown signal fail closed', () {
+    expect(VideoSourceFrameOutcome.parse(true, 2).status, 'protocol-mismatch');
+    final value = <String, Object?>{
+      'version': 2,
+      'generation': 1,
+      'outputEpoch': 7,
+      'signal': 'available-proxy',
+      'status': 'candidate',
+    };
+    expect(VideoSourceFrameOutcome.parse(value, 2).status, 'protocol-mismatch');
+    value['generation'] = 2;
+    expect(VideoSourceFrameOutcome.parse(value, 2).status, 'candidate');
+    value['signal'] = 'playing';
+    expect(VideoSourceFrameOutcome.parse(value, 2).status, 'protocol-mismatch');
+  });
+
   testWidgets('Surface capture decodes a bounded valid frame', (tester) async {
     await tester.runAsync(() async {
       final recorder = ui.PictureRecorder();

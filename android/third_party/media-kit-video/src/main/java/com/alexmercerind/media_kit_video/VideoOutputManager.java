@@ -21,6 +21,26 @@ public class VideoOutputManager {
     private final MethodChannel channelReference;
     private final TextureRegistry textureRegistryReference;
     private final Object lock = new Object();
+    private String experiment = "";
+
+    public HashMap<String, Object> configureExperiment(String variant) {
+        synchronized (lock) {
+            if (!("X0".equals(variant) || "X1".equals(variant) ||
+                    "X2".equals(variant) || "X3".equals(variant))) {
+                throw new IllegalArgumentException("Unknown stage A experiment");
+            }
+            if (!videoOutputs.isEmpty() && !experiment.equals(variant)) {
+                throw new IllegalStateException("Configure experiment before output creation");
+            }
+            experiment = variant;
+            final HashMap<String, Object> result = new HashMap<>();
+            result.put("version", 2);
+            result.put("variant", variant);
+            result.put("defaultListener", "X2".equals(variant) || "X3".equals(variant));
+            result.put("sourceIdentityProven", false);
+            return result;
+        }
+    }
 
     VideoOutputManager(MethodChannel channelReference, TextureRegistry textureRegistryReference) {
         this.channelReference = channelReference;
@@ -31,7 +51,7 @@ public class VideoOutputManager {
         synchronized (lock) {
             Log.i("media_kit", String.format(Locale.ENGLISH, "com.alexmercerind.media_kit_video.VideoOutputManager.create: %d", handle));
             if (!videoOutputs.containsKey(handle)) {
-                final VideoOutput videoOutput = new VideoOutput(handle, channelReference, textureRegistryReference);
+                final VideoOutput videoOutput = new VideoOutput(handle, channelReference, textureRegistryReference, experiment);
                 videoOutputs.put(handle, videoOutput);
             }
             return videoOutputs.get(handle);

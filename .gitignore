@@ -159,6 +159,7 @@ test*
 !/test/utils/video_surface_bridge_test.dart
 !/test/utils/video_source_coordinator_test.dart
 !/test/utils/video_transition_trace_test.dart
+!/test/utils/video_frame_experiment_test.dart
 !/test/common/
 /test/common/*
 !/test/common/widgets/
@@ -166,6 +167,7 @@ test*
 !/test/common/widgets/video_card/
 /test/common/widgets/video_card/*
 !/test/common/widgets/video_card/video_media_text_layer_test.dart
+!/test/common/widgets/video_card/video_frame_gate_test.dart
 !/test/pages/
 /test/pages/*
 !/test/pages/video/

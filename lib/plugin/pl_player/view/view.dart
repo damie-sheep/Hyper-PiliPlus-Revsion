@@ -49,6 +49,8 @@ import 'package:PiliPlus/plugin/pl_player/widgets/compact_player_controls.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/forward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/mpv_convert_webp.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/play_pause_btn.dart';
+import 'package:PiliPlus/plugin/pl_player/widgets/video_frame_gate.dart';
+import 'package:PiliPlus/utils/video_frame_experiment.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -2124,8 +2126,11 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
                 // stay visible and usable while a new source is preparing.
                 final ready =
                     widget.videoDetailController?.videoFrameReady.value ?? true;
-                return Opacity(
-                  opacity: ready ? 1 : 0,
+                return VideoFrameGate(
+                  ready: ready,
+                  livePaint: videoFrameExperimentLivePaint,
+                  fill: widget.fill,
+                  owner: plPlayerController,
                   child: Transform.flip(
                     flipX: plPlayerController.flipX.value,
                     flipY: plPlayerController.flipY.value,

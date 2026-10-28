@@ -97,6 +97,14 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
                 }
             }
             switch (call.method) {
+                case "VideoOutputManager.ConfigureExperiment": {
+                    try {
+                        result.success(videoOutputManager.configureExperiment(call.argument("variant")));
+                    } catch (RuntimeException error) {
+                        result.error("experiment-configuration", error.getMessage(), null);
+                    }
+                    break;
+                }
                 case "VideoOutputManager.Diagnostics": {
                     result.success(VideoDiagnostics.collect(Boolean.TRUE.equals(call.argument("enabled")),
                             Boolean.TRUE.equals(call.argument("drain"))));
@@ -104,6 +112,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
                 }
                 case "VideoOutputManager.CaptureFrame":
                 case "VideoOutputManager.AwaitSourceFrame":
+                case "VideoOutputManager.AwaitSourceFrame2":
                 case "VideoOutputManager.CancelSourceFrame": {
                     final String handle = call.argument("handle");
                     final VideoOutput output = handle == null ? null : videoOutputManager.find(Long.parseLong(handle));
@@ -119,6 +128,8 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
                             result.success(false);
                         } else if (call.method.equals("VideoOutputManager.AwaitSourceFrame")) {
                             output.awaitSourceFrame(generation.longValue(), result);
+                        } else if (call.method.equals("VideoOutputManager.AwaitSourceFrame2")) {
+                            output.awaitSourceFrame2(generation.longValue(), result);
                         } else {
                             output.cancelSourceFrame(generation.longValue());
                             result.success(null);

@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.io.ByteArrayOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import io.flutter.embedding.android.FlutterActivity;
 import io.flutter.embedding.android.FlutterFragmentActivity;
@@ -59,6 +60,14 @@ public class VideoOutput {
     private int outputWidth = 1;
     private int outputHeight = 1;
     private boolean disposed;
+    private final boolean defaultListener;
+    private final String experiment;
+    private static final AtomicLong nextOutputEpoch = new AtomicLong();
+    private final long outputEpoch = nextOutputEpoch.incrementAndGet();
+    private long surfaceEpoch;
+    private long availableCount;
+    private long consumedCount;
+    private Runnable frameTimeout;
     private static final Handler copyHandler;
     static {
         final HandlerThread thread = new HandlerThread("PiliVideoFrameCopy");
@@ -72,11 +81,54 @@ public class VideoOutput {
             result.success(null);
             return;
         }
-        sourceFrames.arm(generation, ready -> mainHandler.post(() -> {
-            VideoDiagnostics.record(this, ready ? "frame:candidate" : "frame:cancel-or-timeout", generation);
-            result.success(ready);
-        }));
-        mainHandler.postDelayed(() -> sourceFrames.cancel(generation), 3000);
+        if (sourceFrames.armWithReason(generation, reason -> mainHandler.post(() -> {
+            VideoDiagnostics.record(this, "frame:" + reason, generation);
+            result.success(reason.equals("candidate"));
+        }))) scheduleFrameTimeout(generation);
+    }
+
+    public void awaitSourceFrame2(long generation, MethodChannel.Result result) {
+        VideoDiagnostics.record(this, "frame:arm", generation);
+        if (disposed || (!defaultListener && !flutterJNIAPIAvailable)) {
+            result.success(frameOutcome(generation, disposed ? "disposed" : "unavailable"));
+            return;
+        }
+        if (sourceFrames.armWithReason(generation, reason -> mainHandler.post(() -> {
+            VideoDiagnostics.record(this, "frame:" + reason, generation);
+            result.success(frameOutcome(generation, reason));
+        }))) scheduleFrameTimeout(generation);
+    }
+
+    private HashMap<String, Object> frameOutcome(long generation, String status) {
+        final HashMap<String, Object> result = new HashMap<>();
+        result.put("version", 2);
+        result.put("generation", generation);
+        result.put("outputEpoch", outputEpoch);
+        result.put("surfaceEpoch", surfaceEpoch);
+        result.put("signal", defaultListener ? "diagnostic-consumed-proxy" : "available-proxy");
+        result.put("sourceIdentityProven", false);
+        result.put("variant", experiment);
+        result.put("defaultListener", defaultListener);
+        result.put("availableObserved", !defaultListener);
+        result.put("consumedObserver", !experiment.isEmpty());
+        result.put("status", status);
+        result.put("availableCount", availableCount);
+        result.put("consumedCount", consumedCount);
+        return result;
+    }
+
+    private void scheduleFrameTimeout(long generation) {
+        if (frameTimeout != null) mainHandler.removeCallbacks(frameTimeout);
+        frameTimeout = () -> sourceFrames.timeout(generation);
+        mainHandler.postDelayed(frameTimeout, 3000);
+    }
+
+    private void notifyFirstFrame() {
+        if (disposed || waitUntilFirstFrameRenderedNotify) return;
+        waitUntilFirstFrameRenderedNotify = true;
+        final HashMap<String, Object> data = new HashMap<>();
+        data.put("handle", handle);
+        channelReference.invokeMethod("VideoOutput.WaitUntilFirstFrameRenderedNotify", data);
     }
 
     public void cancelSourceFrame(long generation) {
@@ -130,7 +182,9 @@ public class VideoOutput {
         }
     }
 
-    VideoOutput(long handle, MethodChannel channelReference, TextureRegistry textureRegistryReference) {
+    VideoOutput(long handle, MethodChannel channelReference, TextureRegistry textureRegistryReference, String experiment) {
+        this.experiment = experiment;
+        defaultListener = "X2".equals(experiment) || "X3".equals(experiment);
         VideoDiagnostics.record(this, "surface:output-create", 0);
         this.handle = handle;
         this.channelReference = channelReference;
@@ -151,6 +205,23 @@ public class VideoOutput {
         }
 
         surfaceTextureEntry = textureRegistryReference.createSurfaceTexture();
+        VideoDiagnostics.record(this, "surface:output-epoch", outputEpoch);
+        VideoDiagnostics.record(this, defaultListener ? "surface:engine-listener-preserved" : "surface:legacy-listener", outputEpoch);
+        // Independent public observation slot. Do not overwrite the engine's
+        // available listener or reflectively mutate SurfaceTextureWrapper.
+        // The callback is on the raster thread; channel/gate work stays on main.
+        if (!experiment.isEmpty()) surfaceTextureEntry.setOnFrameConsumedListener(() -> mainHandler.post(() -> {
+            if (disposed) return;
+            consumedCount++;
+            if (consumedCount <= 8 || consumedCount % 60 == 0) {
+                VideoDiagnostics.record(this, "surface:consumed", consumedCount);
+            }
+            if (defaultListener && outputWidth > 1 && outputHeight > 1) {
+                // Deliberately a stage A proxy, NOT new-source proof for B1.
+                sourceFrames.frame();
+                notifyFirstFrame();
+            }
+        }));
 
         // If we call setOnFrameAvailableListener after creating SurfaceTextureEntry, the texture won't be displayed inside Flutter UI, because callback set by us will override the Flutter engine's own registered callback:
         // https://github.com/flutter/engine/blob/f47e864f2dcb9c299a3a3ed22300a1dcacbdf1fe/shell/platform/android/io/flutter/view/FlutterView.java#L942-L958
@@ -162,13 +233,19 @@ public class VideoOutput {
             e.printStackTrace();
         }
         Log.i("media_kit", String.format(Locale.ENGLISH, "flutterJNIAPIAvailable = %b", flutterJNIAPIAvailable));
-        if (flutterJNIAPIAvailable) {
+        if (defaultListener) {
+            // Engine owns dirty + schedule. The consume observer above supplies
+            // the stage A experiment signal; no unconditional first-frame ready.
+        } else if (flutterJNIAPIAvailable) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 surfaceTextureEntry.surfaceTexture().setOnFrameAvailableListener((texture) -> {
                     synchronized (lock) {
                         try {
                             if (!disposed && outputWidth > 1 && outputHeight > 1) {
-                                VideoDiagnostics.record(this, "surface:frame-callback", 0);
+                                availableCount++;
+                                if (availableCount <= 8 || availableCount % 60 == 0) {
+                                    VideoDiagnostics.record(this, "surface:frame-callback", availableCount);
+                                }
                                 sourceFrames.frame();
                             }
                             if (!waitUntilFirstFrameRenderedNotify) {
@@ -233,6 +310,9 @@ public class VideoOutput {
 
     public void dispose() {
         disposed = true;
+        if (frameTimeout != null) mainHandler.removeCallbacks(frameTimeout);
+        if (!experiment.isEmpty()) surfaceTextureEntry.setOnFrameConsumedListener(null);
+        VideoDiagnostics.record(this, "surface:dispose-output-epoch", outputEpoch);
         sourceFrames.close();
         try {
             surfaceTextureEntry.release();
@@ -262,6 +342,7 @@ public class VideoOutput {
 
     public long createSurface() {
         VideoDiagnostics.record(this, "surface:create-start", 0);
+        VideoDiagnostics.record(this, "surface:epoch", ++surfaceEpoch);
         synchronized (lock) {
             // Delete previous android.view.Surface & object reference.
             try {
@@ -295,6 +376,8 @@ public class VideoOutput {
 
     public void setSurfaceTextureSize(int width, int height) {
         try {
+            VideoDiagnostics.record(this, "surface:width", width);
+            VideoDiagnostics.record(this, "surface:height", height);
             outputWidth = width;
             outputHeight = height;
             surfaceTextureEntry.surfaceTexture().setDefaultBufferSize(width, height);

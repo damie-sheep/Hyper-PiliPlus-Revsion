@@ -145,8 +145,18 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       }
       if (image != null) {
         final previous = _retainedFrame.value;
+        recordVideoTransition(heroTag, 'retained:replace', {
+          'image': identityHashCode(image),
+          'previous': previous == null ? null : identityHashCode(previous),
+          'restoreGeneration': generation,
+        });
         _retainedFrame.value = image;
         await WidgetsBinding.instance.endOfFrame;
+        if (previous != null) {
+          recordVideoTransition(heroTag, 'retained:dispose-replaced', {
+            'image': identityHashCode(previous),
+          });
+        }
         previous?.dispose();
         traceVideoTransition(heroTag, 'page:retained-surface-frame');
       } else {
@@ -193,8 +203,20 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     ) {
       if (!ready || !mounted || !isShowing) return;
       final oldFrame = _retainedFrame.value;
+      if (oldFrame != null) {
+        recordVideoTransition(heroTag, 'retained:uncover', {
+          'image': identityHashCode(oldFrame),
+        });
+      }
       _retainedFrame.value = null;
-      WidgetsBinding.instance.addPostFrameCallback((_) => oldFrame?.dispose());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (oldFrame != null) {
+          recordVideoTransition(heroTag, 'retained:dispose-uncovered', {
+            'image': identityHashCode(oldFrame),
+          });
+          oldFrame.dispose();
+        }
+      });
     });
 
     introController = _initIntroCtr();
@@ -389,6 +411,11 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     videoDetailController.isForeground = false;
     _frameReadyWorker.dispose();
     _restoreGeneration++;
+    if (_retainedFrame.value case final image?) {
+      recordVideoTransition(heroTag, 'retained:dispose-page', {
+        'image': identityHashCode(image),
+      });
+    }
     _retainedFrame.value?.dispose();
     _retainedFrame.dispose();
     plPlayerController

@@ -6,6 +6,7 @@ import 'package:PiliPlus/common/widgets/translucent_column.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_transition_geometry.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/video_transition_trace.dart';
+import 'package:PiliPlus/utils/video_frame_experiment.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/rendering.dart';
@@ -279,6 +280,7 @@ class _RenderTargetPart extends RenderProxyBox
   _RenderTargetPart(this.part);
   VideoTransitionPart part;
   _RenderVideoStage? _stage;
+  bool? _lastOffstage;
 
   @override
   bool get forwardTranslucentHitTest => part == VideoTransitionPart.details;
@@ -289,15 +291,30 @@ class _RenderTargetPart extends RenderProxyBox
   @override
   void performLayout() {
     super.performLayout();
+    final previousStage = _stage;
     _unregister();
     RenderObject? ancestor = parent;
+    var offstage = false;
     while (ancestor != null && ancestor is! _RenderVideoStage) {
+      if (ancestor is RenderOffstage && ancestor.offstage) offstage = true;
       ancestor = ancestor.parent;
     }
     if (ancestor is _RenderVideoStage) {
       _stage = ancestor;
       ancestor.targets[part] = this;
       ancestor._targetLayoutVersion++;
+      if (!identical(previousStage, ancestor) || _lastOffstage != offstage) {
+        recordVideoTransition(ancestor._traceOwner, 'target:registered', {
+          'instance': identityHashCode(this),
+          'part': part.name,
+          'offstage': offstage,
+          'attached': attached,
+          'width': size.width,
+          'height': size.height,
+          'units': 'target-local',
+        });
+      }
+      _lastOffstage = offstage;
     }
   }
 
@@ -308,6 +325,10 @@ class _RenderTargetPart extends RenderProxyBox
 
   @override
   void detach() {
+    recordVideoTransition(_stage?._traceOwner, 'target:detached', {
+      'instance': identityHashCode(this),
+      'part': part.name,
+    });
     _unregister();
     super.detach();
   }
@@ -972,6 +993,18 @@ class _RenderVideoStage extends RenderProxyBox {
               ? Colors.black
               : Colors.pink,
       );
+    }
+    // Four cells identify X0..X3 without allocating/layouting text in paint.
+    if (videoFrameExperiment.isNotEmpty) {
+      for (var index = 0; index < 4; index++) {
+        canvas.drawRect(
+          Rect.fromLTWH(offset.dx + 8 + index * 12, offset.dy + 42, 10, 6),
+          Paint()
+            ..color = videoFrameExperiment == 'X$index'
+                ? Colors.cyan
+                : Colors.black,
+        );
+      }
     }
   }
 

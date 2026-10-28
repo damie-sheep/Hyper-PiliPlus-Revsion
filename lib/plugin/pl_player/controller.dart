@@ -997,6 +997,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   Future<Player> _initPlayer() async {
     assert(_videoPlayerController == null);
+    if (Platform.isAndroid) await VideoSurfaceBridge.configureExperiment();
+    traceVideoTransition(this, 'prepare:player-start');
     final opt = {
       'video-sync': Pref.videoSync,
       if (Platform.isAndroid) 'ao': Pref.audioOutput,
@@ -1015,10 +1017,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         options: opt,
       ),
     );
+    traceVideoTransition(this, 'prepare:player-end');
 
     assert(_videoController == null);
 
     try {
+      traceVideoTransition(this, 'prepare:video-controller-start');
       _videoController = await VideoController.create(
         player,
         configuration: VideoControllerConfiguration(
@@ -1027,6 +1031,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
           hwdec: hwdec,
         ),
       );
+      traceVideoTransition(this, 'prepare:video-controller-end');
     } catch (_) {
       await player.dispose();
       rethrow;
@@ -1104,7 +1109,10 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
 
     assert(!isLive || seekTo == null);
-    recordVideoTransition(this, 'source:output-owner', {'generation': sourceGeneration, 'outputOwner': identityHashCode(player.handle)});
+    recordVideoTransition(this, 'source:output-owner', {
+      'generation': sourceGeneration,
+      'outputOwner': identityHashCode(player.handle),
+    });
     traceVideoTransition(
       this,
       'source:open-start generation=$sourceGeneration',
