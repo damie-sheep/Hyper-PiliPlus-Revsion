@@ -86,6 +86,14 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
     : super(page: () => Builder(builder: builder));
 
   bool _gestureCommitted = false;
+  // Latched through a cancelled gesture's forward leg, until B is restored.
+  double? relatedReturnStart;
+  void _beginRelatedReturn() {
+    if (mode == VideoTransitionMode.detailRelated) {
+      relatedReturnStart ??= controller?.value;
+    }
+  }
+
   AnimationStatusListener? _gestureCompletion;
   final _entryReady = Completer<bool>();
   final _coverageReady = Completer<void>();
@@ -117,6 +125,8 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   }
 
   void _entryStatus(AnimationStatus status) {
+    if (status == AnimationStatus.reverse) _beginRelatedReturn();
+    if (status == AnimationStatus.completed) relatedReturnStart = null;
     traceVideoTransition(_entryTag, 'route:${status.name}');
     if (status == AnimationStatus.completed) {
       _finishEntry(true);
@@ -159,6 +169,7 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
 
   @override
   void handleStartBackGesture({double progress = 0.0}) {
+    _beginRelatedReturn();
     traceVideoTransition(_entryTag, 'route:gesture-start');
     _gestureCommitted = false;
     super.handleStartBackGesture(progress: progress);
@@ -225,7 +236,16 @@ class VideoPageTransitionRoute<T> extends GetPageRoute<T> {
   ) => child;
 }
 
-enum VideoTransitionPart { cover, tabs, owner, title, details, information }
+enum VideoTransitionPart {
+  cover,
+  tabs,
+  owner,
+  title,
+  details,
+  information,
+  chrome,
+  content,
+}
 
 /// Marks the actual painted child, preserving rich text, line breaks and scale.
 class VideoTransitionSourcePart extends SingleChildRenderObjectWidget {
@@ -280,6 +300,7 @@ class _RenderTargetPart extends RenderProxyBox
   _RenderTargetPart(this.part);
   VideoTransitionPart part;
   _RenderVideoStage? _stage;
+  final _opacityLayer = LayerHandle<OpacityLayer>();
   bool? _lastOffstage;
 
   @override
@@ -325,6 +346,7 @@ class _RenderTargetPart extends RenderProxyBox
 
   @override
   void detach() {
+    _opacityLayer.layer = null;
     recordVideoTransition(_stage?._traceOwner, 'target:detached', {
       'instance': identityHashCode(this),
       'part': part.name,
@@ -336,20 +358,44 @@ class _RenderTargetPart extends RenderProxyBox
   double get _opacity {
     final stage = _stage;
     if (stage == null || stage.snapshot == null) return 1;
+    if (stage.geometry.returning) {
+      // A content group owns all its descendants' exit alpha exactly once.
+      RenderObject? ancestor = parent;
+      while (ancestor != null && ancestor != stage) {
+        if (ancestor is _RenderTargetPart &&
+            ancestor.part == VideoTransitionPart.content) {
+          return _entryOpacity(stage.entryGeometry);
+        }
+        ancestor = ancestor.parent;
+      }
+      final alpha = part == VideoTransitionPart.cover
+          ? stage.geometry.mediaOpacity
+          : stage.geometry.bodyOpacity;
+      return alpha * _entryOpacity(stage.entryGeometry);
+    }
+    return _entryOpacity(stage.geometry);
+  }
+
+  double _entryOpacity(VideoTransitionGeometry frame) {
+    final stage = _stage!;
+    if (part == VideoTransitionPart.chrome ||
+        part == VideoTransitionPart.content) {
+      return 1;
+    }
     if (stage.hasInformationGroup && part != VideoTransitionPart.cover) {
-      return stage.geometry.targetInformationOpacity;
+      return frame.targetInformationOpacity;
     }
     if (part == VideoTransitionPart.title &&
         stage.mode == VideoTransitionMode.detailRelated) {
-      return stage.geometry.informationOpacity;
+      return frame.informationOpacity;
     }
     return switch (part) {
       VideoTransitionPart.title
           when stage.snapshot!.parts[VideoTransitionPart.title] != null =>
-        stage.geometry.targetTitleOpacity,
-      VideoTransitionPart.tabs => stage.geometry.tabsOpacity,
+        frame.targetTitleOpacity,
+      VideoTransitionPart.tabs => frame.tabsOpacity,
       VideoTransitionPart.owner ||
-      VideoTransitionPart.details => stage.geometry.informationOpacity,
+      VideoTransitionPart.details => frame.informationOpacity,
       _ => 1,
     };
   }
@@ -382,6 +428,11 @@ class _RenderTargetPart extends RenderProxyBox
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    if (part == VideoTransitionPart.chrome &&
+        _stage?.geometry.separateChrome == true) {
+      if (_stage!._paintingChrome) super.paint(context, offset);
+      return;
+    }
     if (_media case final media?) {
       context.pushClipRect(needsCompositing, offset, media.clip, (
         context,
@@ -399,8 +450,13 @@ class _RenderTargetPart extends RenderProxyBox
     final opacity = _opacity;
     if (opacity == 1) {
       super.paint(context, offset);
-    } else if (opacity > 0) {
-      context.pushOpacity(offset, (opacity * 255).round(), super.paint);
+    } else {
+      // Keep the live subtree painting even at the invisible exit endpoint.
+      // This is a paint-only layer, never a first-frame readiness gate.
+      final layer = (_opacityLayer.layer ??= OpacityLayer())
+        ..alpha = (opacity * 255).round()
+        ..offset = offset;
+      context.pushLayer(layer, super.paint, Offset.zero);
     }
   }
 
@@ -616,7 +672,11 @@ class VideoTransitionLayer extends StatelessWidget {
         final frame = VideoTransitionGeometry(
           source: const Rect.fromLTWH(0, 0, 1, 1),
           viewport: const Size(1, 1),
-          progress: animation.value,
+          progress:
+              route is VideoPageTransitionRoute &&
+                  route.relatedReturnStart != null
+              ? max(animation.value, route.relatedReturnStart!)
+              : animation.value,
           mode: route is VideoPageTransitionRoute
               ? route.mode
               : VideoTransitionMode.homeCard,
@@ -800,6 +860,9 @@ class _VideoPageHeroTargetState extends State<VideoPageHeroTarget> {
       _source?.cover(
         !_fallback &&
             status != AnimationStatus.reverse &&
+            !(_route is VideoPageTransitionRoute &&
+                (_route as VideoPageTransitionRoute).relatedReturnStart !=
+                    null) &&
             status != AnimationStatus.dismissed,
       );
     }
@@ -820,7 +883,13 @@ class _VideoPageHeroTargetState extends State<VideoPageHeroTarget> {
   }
 
   void _anchorReturn(Size viewport) {
-    if (!_entryCompleted || _returnAnchored) return;
+    if (!_entryCompleted &&
+        !(_route is VideoPageTransitionRoute &&
+            (_route as VideoPageTransitionRoute).mode ==
+                VideoTransitionMode.detailRelated)) {
+      return;
+    }
+    if (_returnAnchored) return;
     _returnAnchored = true;
     final source = _source;
     final rect = source?.mounted == true && source!.widget.tag == widget.tag
@@ -837,6 +906,22 @@ class _VideoPageHeroTargetState extends State<VideoPageHeroTarget> {
       _source?.cover(false);
     } else {
       _returnRect = rect;
+    }
+  }
+
+  void _validateReturn() {
+    if (!(_route is VideoPageTransitionRoute &&
+        (_route as VideoPageTransitionRoute).mode ==
+            VideoTransitionMode.detailRelated)) {
+      return;
+    }
+    if (!_returnAnchored || _fallback) return;
+    final source = _source;
+    if (source?.mounted != true ||
+        source!.widget.tag != widget.tag ||
+        source.rect != _returnRect) {
+      _fallback = true;
+      _source?.cover(false);
     }
   }
 
@@ -871,12 +956,16 @@ class _VideoPageHeroTargetState extends State<VideoPageHeroTarget> {
               (_route?.popGestureInProgress ?? false)) {
             _source?.cover(false);
             _anchorReturn(size);
+            _validateReturn();
           }
           return _VideoStage(
             key: const ValueKey('video-transition-stage'),
-            snapshot: _animation == null || _fallback ? null : _snapshot,
+            snapshot: _animation == null ? null : _snapshot,
             sourceRect: _returnRect ?? _snapshot?.rect,
             progress: animation?.value ?? 1,
+            returnStart: _route is VideoPageTransitionRoute
+                ? (_route as VideoPageTransitionRoute).relatedReturnStart
+                : null,
             fallback: _fallback,
             color: widget.surfaceColor,
             traceOwner: widget.tag,
@@ -897,6 +986,7 @@ class _VideoStage extends SingleChildRenderObjectWidget {
     required this.snapshot,
     required this.sourceRect,
     required this.progress,
+    required this.returnStart,
     required this.fallback,
     required this.color,
     required this.mode,
@@ -906,6 +996,7 @@ class _VideoStage extends SingleChildRenderObjectWidget {
   final _CardSnapshot? snapshot;
   final Rect? sourceRect;
   final double progress;
+  final double? returnStart;
   final bool fallback;
   final Color color;
   final VideoTransitionMode mode;
@@ -926,6 +1017,9 @@ class _RenderVideoStage extends RenderProxyBox {
   _CardSnapshot? snapshot;
   Rect? _sourceRect;
   double _progress = 1;
+  double? _returnStart;
+  double? _fallbackAt;
+  bool _paintingChrome = false;
   bool _fallback = false;
   Color _color = Colors.transparent;
   VideoTransitionMode mode = VideoTransitionMode.homeCard;
@@ -970,6 +1064,15 @@ class _RenderVideoStage extends RenderProxyBox {
       'layoutVersion': _layoutVersion,
       'targetLayoutVersion': _targetLayoutVersion,
       'mode': mode.name,
+      if (frame.returning) ...{
+        'returnStart': _returnStart,
+        'returnProgress': frame.returnProgress,
+        'contentTop': frame.contentTop,
+        'mediaOpacity': frame.mediaOpacity,
+        'bodyOpacity': frame.bodyOpacity,
+        'bannerOpacity': frame.bannerOpacity,
+        'panelOpacity': frame.panelOpacity,
+      },
       'fallback': _fallback
           ? 'source-or-viewport-invalid'
           : (snapshot == null ? 'capture-unavailable' : null),
@@ -1012,9 +1115,17 @@ class _RenderVideoStage extends RenderProxyBox {
       snapshot?.parts.containsKey(VideoTransitionPart.information) ?? false;
 
   void configure(_VideoStage widget) {
-    snapshot = widget.snapshot;
+    if (widget.fallback && !_fallback) _fallbackAt = _progress;
+    snapshot =
+        widget.fallback && widget.mode != VideoTransitionMode.detailRelated
+        ? null
+        : widget.snapshot;
     _sourceRect = widget.sourceRect;
     _progress = widget.progress;
+    _returnStart = widget.returnStart;
+    if (widget.fallback && widget.progress == 1 && widget.returnStart == null) {
+      _fallbackAt = 1;
+    }
     _fallback = widget.fallback;
     _color = widget.color;
     mode = widget.mode;
@@ -1036,7 +1147,16 @@ class _RenderVideoStage extends RenderProxyBox {
       -localToGlobal(Offset.zero),
     ),
     viewport: size,
-    progress: _progress,
+    progress: _fallbackAt == null ? _progress : max(_progress, _fallbackAt!),
+    mode: mode,
+    returnStart: _returnStart,
+    contentTop: _target(VideoTransitionPart.chrome)?.rect.bottom ?? 0,
+  );
+
+  VideoTransitionGeometry get entryGeometry => VideoTransitionGeometry(
+    source: geometry.source,
+    viewport: size,
+    progress: _returnStart ?? _progress,
     mode: mode,
   );
 
@@ -1045,7 +1165,13 @@ class _RenderVideoStage extends RenderProxyBox {
     final frame = geometry;
     return Matrix4.identity()
       ..translateByDouble(frame.container.left, frame.container.top, 0, 1)
-      ..scaleByDouble(frame.scale, frame.scale, 1, 1);
+      ..scaleByDouble(frame.scale, frame.scale, 1, 1)
+      ..translateByDouble(
+        0,
+        frame.returning ? -frame.paintContentTop : 0,
+        0,
+        1,
+      );
   }
 
   ({Rect rect, double baseline})? _target(VideoTransitionPart part) {
@@ -1089,6 +1215,21 @@ class _RenderVideoStage extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    if (_fallback &&
+        snapshot != null &&
+        _fallbackAt != null &&
+        _fallbackAt! > 0) {
+      context.pushOpacity(
+        offset,
+        ((_progress / _fallbackAt!).clamp(0, 1) * 255).round(),
+        _paintStage,
+      );
+    } else {
+      _paintStage(context, offset);
+    }
+  }
+
+  void _paintStage(PaintingContext context, Offset offset) {
     _recordPaint();
     if (!_tracedFirstPaint) {
       _tracedFirstPaint = true;
@@ -1118,6 +1259,18 @@ class _RenderVideoStage extends RenderProxyBox {
         Paint()..color = Colors.black.withValues(alpha: 0.24 * frame.expansion),
       );
     }
+    if (frame.returning && !_fallback) {
+      // The real row already paints for removal-frame readiness. Mask only
+      // its stationary pixels until the moving copy lands, avoiding two rows.
+      context.canvas.drawRect(
+        frame.source.shift(offset),
+        Paint()
+          ..color = Color.alphaBlend(
+            Colors.black.withValues(alpha: .24 * frame.expansion),
+            source.color,
+          ),
+      );
+    }
     context.pushClipRRect(
       needsCompositing,
       offset,
@@ -1129,13 +1282,26 @@ class _RenderVideoStage extends RenderProxyBox {
           Paint()
             ..color = hasInformationGroup
                 ? Color.lerp(source.color, _color, frame.expansion)!
-                : _color,
+                : _color.withValues(
+                    alpha: frame.returning ? frame.panelOpacity : 1,
+                  ),
         );
         context.pushTransform(
           needsCompositing,
           offset,
           _transform,
-          super.paint,
+          (context, offset) {
+            if (frame.returning) {
+              context.pushClipRect(
+                needsCompositing,
+                offset,
+                frame.contentBounds,
+                super.paint,
+              );
+            } else {
+              super.paint(context, offset);
+            }
+          },
         );
         // Sources contain pixels only; never clone controllers or a live player.
         final canvas = context.canvas
@@ -1145,7 +1311,53 @@ class _RenderVideoStage extends RenderProxyBox {
         canvas.restore();
       },
     );
+    _paintChrome(context, offset, frame);
     _paintMarker(context.canvas, offset);
+  }
+
+  void _paintChrome(
+    PaintingContext context,
+    Offset offset,
+    VideoTransitionGeometry frame,
+  ) {
+    if (frame.separateChrome) {
+      final chrome = targets[VideoTransitionPart.chrome];
+      final chromeRect = _target(VideoTransitionPart.chrome)?.rect;
+      if (chrome != null && chromeRect != null) {
+        // Draw the same lightweight chrome once, outside the moving clip.
+        // Early entry reversal starts at its existing transformed location.
+        final start = entryGeometry;
+        final origin = start.mapPoint(chromeRect.topLeft);
+        final fixed = Offset.lerp(
+          origin,
+          chromeRect.topLeft,
+          frame.returnProgress,
+        )!;
+        _paintingChrome = true;
+        context.pushOpacity(
+          offset,
+          (255 * (1 - frame.returnProgress)).round(),
+          (context, offset) {
+            final clip = start.container.shift(fixed - origin);
+            context.pushClipRRect(
+              needsCompositing,
+              offset,
+              clip,
+              RRect.fromRectAndRadius(clip, Radius.circular(start.radius)),
+              (context, offset) => context.pushTransform(
+                needsCompositing,
+                offset,
+                Matrix4.identity()
+                  ..translateByDouble(fixed.dx, fixed.dy, 0, 1)
+                  ..scaleByDouble(start.scale, start.scale, 1, 1),
+                (context, offset) => context.paintChild(chrome, offset),
+              ),
+            );
+          },
+        );
+        _paintingChrome = false;
+      }
+    }
   }
 
   void _draw(Canvas canvas, ui.Image image, Rect rect, double opacity) {
@@ -1167,10 +1379,27 @@ class _RenderVideoStage extends RenderProxyBox {
   ) {
     final rect = frame.container;
     final cardScale = rect.width / source.rect.width;
-    final card = rect.topLeft & (source.rect.size * cardScale);
+    final card = mode == VideoTransitionMode.detailRelated
+        ? frame.bannerRect
+        : rect.topLeft & (source.rect.size * cardScale);
     if (mode == VideoTransitionMode.detailRelated) {
       // The row locates the new media panel; its cover never flies to the player.
-      _draw(canvas, source.image, card, frame.relatedSourceOpacity);
+      // Composite the semantic source surface and transparent snapshot together.
+      // This locally retires the media beneath the row with the same reversible
+      // track, without recoloring the rest of the video panel.
+      if (frame.bannerOpacity > 0) {
+        canvas
+          ..saveLayer(
+            card,
+            Paint()
+              ..color = Colors.white.withValues(
+                alpha: frame.bannerOpacity,
+              ),
+          )
+          ..drawRect(card, Paint()..color = source.color);
+        _draw(canvas, source.image, card, 1);
+        canvas.restore();
+      }
       return;
     }
     final sourceShift =
@@ -1256,6 +1485,9 @@ class _RenderVideoStage extends RenderProxyBox {
 
   @override
   bool hitTestChildren(BoxHitTestResult result, {required Offset position}) {
+    if (snapshot != null && geometry.returning && geometry.returnProgress > 0) {
+      return false;
+    }
     if (snapshot != null &&
         !RRect.fromRectAndRadius(
           geometry.container,
@@ -1274,4 +1506,7 @@ class _RenderVideoStage extends RenderProxyBox {
   @override
   void applyPaintTransform(RenderBox child, Matrix4 transform) =>
       transform.multiply(_transform);
+
+  @override
+  bool hitTestSelf(Offset position) => snapshot != null && geometry.returning;
 }

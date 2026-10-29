@@ -59,5 +59,20 @@ public class SourceFrameGateTest {
         reasons.armWithReason(6, outcomes::add);
         equal(outcomes, Arrays.asList("cancelled", "timeout", "superseded", "rejected", "candidate", "disposed", "disposed"));
         System.out.println("SourceFrameGate: 7 explicit-outcome scenarios passed");
+        final SourceFrameGate binding = new SourceFrameGate();
+        final List<String> bound = new ArrayList<>();
+        binding.armWithReason(10, bound::add);
+        binding.frame(10);
+        binding.armWithReason(11, bound::add);
+        binding.frame(10);
+        binding.frame(10);
+        binding.frame(11);
+        equal(bound, Arrays.asList("superseded"));
+        binding.resetObservations();
+        binding.frame(11);
+        equal(bound, Arrays.asList("superseded"));
+        binding.frame(11);
+        equal(bound, Arrays.asList("superseded", "candidate"));
+        System.out.println("SourceFrameGate: queued stale observations rejected; Surface replacement resets partial counts");
     }
 }

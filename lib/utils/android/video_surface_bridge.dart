@@ -67,28 +67,8 @@ abstract final class VideoSurfaceBridge {
   }
 
   static Future<bool?> waitForSourceFrame(int handle, int generation) async {
-    if (videoFrameExperiment.isNotEmpty) {
-      final outcome = await waitForSourceFrameOutcome(handle, generation);
-      // Stage A fails closed on protocol/capability mismatch. Never enter the
-      // older position-stream fallback and mislabel it as observed consumption.
-      return outcome.status == 'candidate';
-    }
-    try {
-      return await _channel
-          .invokeMethod<bool>(
-            'VideoOutputManager.AwaitSourceFrame',
-            {
-              'handle': '$handle',
-              'generation': generation,
-              'traceOwner': identityHashCode(handle),
-            },
-          )
-          .timeout(const Duration(milliseconds: 3200));
-    } on TimeoutException {
-      return false;
-    } catch (_) {
-      return null;
-    }
+    final outcome = await waitForSourceFrameOutcome(handle, generation);
+    return outcome.status == 'candidate';
   }
 
   static Future<VideoSourceFrameOutcome> waitForSourceFrameOutcome(
@@ -136,6 +116,29 @@ abstract final class VideoSurfaceBridge {
       );
     } catch (_) {
       // Output disposal also cancels native waiters.
+    }
+  }
+
+  static Future<bool> isSourceFrameCurrent(
+    int handle,
+    int generation,
+    VideoSourceFrameOutcome outcome,
+  ) async {
+    try {
+      return await _channel
+              .invokeMethod<bool>(
+                'VideoOutputManager.IsSourceFrameCurrent',
+                {
+                  'handle': '$handle',
+                  'generation': generation,
+                  'outputEpoch': outcome.fields['outputEpoch'],
+                  'surfaceEpoch': outcome.fields['surfaceEpoch'],
+                },
+              )
+              .timeout(const Duration(milliseconds: 200)) ==
+          true;
+    } catch (_) {
+      return false;
     }
   }
 }

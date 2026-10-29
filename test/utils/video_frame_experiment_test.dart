@@ -14,11 +14,11 @@ void main() {
     expect(videoFrameExperiment, active ? requested : '');
     expect(
       videoFrameExperimentLivePaint,
-      active && ['X1', 'X3'].contains(requested),
+      !active || ['X1', 'X3'].contains(requested),
     );
     expect(
       videoFrameExperimentDefaultListener,
-      active && ['X2', 'X3'].contains(requested),
+      !active || ['X2', 'X3'].contains(requested),
     );
     const channel = MethodChannel('com.alexmercerind/media_kit_video');
     final messenger =

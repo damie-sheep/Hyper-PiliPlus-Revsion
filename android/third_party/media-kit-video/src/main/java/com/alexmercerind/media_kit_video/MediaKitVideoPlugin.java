@@ -113,6 +113,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
                 case "VideoOutputManager.CaptureFrame":
                 case "VideoOutputManager.AwaitSourceFrame":
                 case "VideoOutputManager.AwaitSourceFrame2":
+                case "VideoOutputManager.IsSourceFrameCurrent":
                 case "VideoOutputManager.CancelSourceFrame": {
                     final String handle = call.argument("handle");
                     final VideoOutput output = handle == null ? null : videoOutputManager.find(Long.parseLong(handle));
@@ -130,6 +131,11 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
                             output.awaitSourceFrame(generation.longValue(), result);
                         } else if (call.method.equals("VideoOutputManager.AwaitSourceFrame2")) {
                             output.awaitSourceFrame2(generation.longValue(), result);
+                        } else if (call.method.equals("VideoOutputManager.IsSourceFrameCurrent")) {
+                            final Number epoch = call.argument("outputEpoch");
+                            final Number surface = call.argument("surfaceEpoch");
+                            result.success(epoch != null && surface != null && output.isSourceFrameCurrent(
+                                generation.longValue(), epoch.longValue(), surface.longValue()));
                         } else {
                             output.cancelSourceFrame(generation.longValue());
                             result.success(null);

@@ -26,7 +26,17 @@ public final class SourceFrameGate {
     }
 
     public synchronized void frame() {
+        frame(generation);
+    }
+
+    public synchronized void frame(long observedGeneration) {
+        if (observedGeneration != generation) return;
         if (completion != null && --remaining == 0) finish("candidate");
+    }
+
+    /** A replacement Surface starts fresh within the original timeout. */
+    public synchronized void resetObservations() {
+        if (completion != null) remaining = 2;
     }
 
     public synchronized void cancel(long value) {

@@ -53,6 +53,7 @@ import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:PiliPlus/utils/video_transition_trace.dart';
 import 'package:PiliPlus/utils/video_source_coordinator.dart';
+import 'package:PiliPlus/utils/video_frame_confirmation.dart';
 import 'package:archive/archive.dart' show getCrc32;
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:easy_debounce/easy_throttle.dart';
@@ -84,6 +85,19 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   final _sources = VideoSourceCoordinator();
   int get _sourceGeneration => _sources.generation;
   int _frameWaitGeneration = 0;
+
+  void cancelFrameConfirmation() {
+    _sources.invalidate();
+    if (Platform.isAndroid && _videoPlayerController != null) {
+      unawaited(
+        VideoSurfaceBridge.cancelSourceFrame(
+          _videoPlayerController!.handle,
+          _frameWaitGeneration,
+        ),
+      );
+    }
+  }
+
   Future<Player?>? _playerPreparation;
 
   /// Cold creation can overlap the play-URL request. A warm shared player is
@@ -765,9 +779,20 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     bool autoFullScreenFlag = false,
     bool Function()? canAttach,
     VoidCallback? onSourceFrame,
+    VoidCallback? onSourceFrameError,
     Object? transitionOwner,
   }) async {
     final request = _sources.request();
+    if (Platform.isAndroid &&
+        _videoPlayerController != null &&
+        _frameWaitGeneration != 0) {
+      unawaited(
+        VideoSurfaceBridge.cancelSourceFrame(
+          _videoPlayerController!.handle,
+          _frameWaitGeneration,
+        ),
+      );
+    }
     final sourceGeneration = request.generation;
     traceVideoTransition(
       this,
@@ -833,12 +858,13 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
       // Register AFTER open, before play. The old controller-level Future may
       // already have completed on a completely different media source.
+      final frameClock = Stopwatch()..start();
       final sourceFrame = Platform.isAndroid
-          ? VideoSurfaceBridge.waitForSourceFrame(
+          ? VideoSurfaceBridge.waitForSourceFrameOutcome(
               _videoPlayerController!.handle,
               ++_frameWaitGeneration,
             )
-          : Future<bool?>.value(null);
+          : Future.value(const VideoSourceFrameOutcome('unavailable'));
 
       if (_playerCount == 0) {
         _removeListeners();
@@ -865,66 +891,55 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       );
       onInit?.call();
       if (onSourceFrame != null && Platform.isAndroid) {
+        final player = _videoPlayerController!;
+        final waitGeneration = _frameWaitGeneration;
+        bool current() =>
+            sourceGeneration == _sourceGeneration &&
+            identical(player, _videoPlayerController) &&
+            (canAttach == null || canAttach());
         unawaited(() async {
-          var pending = sourceFrame;
-          while (true) {
-            final ready = await pending;
-            if (sourceGeneration != _sourceGeneration ||
-                (canAttach != null && !canAttach())) {
-              return;
-            }
-            if (ready == null) {
-              // A backend without the repository frame listener must not claim
-              // native presentation. Uncover only on later decoded playback.
-              traceVideoTransition(
-                this,
-                'source:frame-listener-unavailable generation=$sourceGeneration',
-              );
-              try {
-                await _videoPlayerController!.stream.position.first.timeout(
-                  const Duration(seconds: 30),
-                );
-              } catch (_) {
-                return;
-              }
-            }
-            await WidgetsBinding.instance.endOfFrame;
-            if (sourceGeneration != _sourceGeneration ||
-                (canAttach != null && !canAttach())) {
-              return;
-            }
-            final params = _videoPlayerController?.state.videoParams;
-            if (ready != false &&
-                (params?.dw ?? 0) > 1 &&
-                (params?.dh ?? 0) > 1) {
-              traceVideoTransition(
-                this,
-                'source:${ready == true ? 'frame-candidate' : 'frame-fallback'} generation=$sourceGeneration',
-              );
+          final confirmed = await confirmVideoFrame(
+            timeout: Duration(
+              milliseconds: (3500 - frameClock.elapsedMilliseconds).clamp(
+                0,
+                3500,
+              ),
+            ),
+            isCurrent: current,
+            observeAndSubmit: () async {
+              final outcome = await sourceFrame;
+              if (!current() || outcome.status != 'candidate') return false;
               await WidgetsBinding.instance.endOfFrame;
-              if (sourceGeneration == _sourceGeneration &&
-                  (canAttach == null || canAttach())) {
-                onSourceFrame();
-                traceVideoTransition(
-                  this,
-                  'source:frame-committed native=${ready == true} generation=$sourceGeneration',
-                );
-              }
-              return;
-            }
+              if (!current()) return false;
+              final params = player.state.videoParams;
+              if ((params.dw ?? 0) <= 1 || (params.dh ?? 0) <= 1) return false;
+              await WidgetsBinding.instance.endOfFrame;
+              return current() &&
+                  await VideoSurfaceBridge.isSourceFrameCurrent(
+                    player.handle,
+                    waitGeneration,
+                    outcome,
+                  );
+            },
+          );
+          if (!current()) return;
+          if (confirmed) {
+            onSourceFrame();
+            traceVideoTransition(
+              this,
+              'source:frame-committed native=candidate generation=$sourceGeneration',
+            );
+          } else {
+            await VideoSurfaceBridge.cancelSourceFrame(
+              player.handle,
+              waitGeneration,
+            );
+            if (!current()) return;
+            dataStatus.value = DataStatus.error;
+            onSourceFrameError?.call();
             traceVideoTransition(
               this,
               'source:frame-unconfirmed generation=$sourceGeneration',
-            );
-            if (!Platform.isAndroid) return;
-            await Future<void>.delayed(const Duration(milliseconds: 32));
-            if (sourceGeneration != _sourceGeneration ||
-                (canAttach != null && !canAttach())) {
-              return;
-            }
-            pending = VideoSurfaceBridge.waitForSourceFrame(
-              _videoPlayerController!.handle,
-              ++_frameWaitGeneration,
             );
           }
         }());
@@ -933,6 +948,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       if (sourceGeneration != _sourceGeneration) return;
       traceVideoTransition(this, 'source:error generation=$sourceGeneration');
       dataStatus.value = DataStatus.error;
+      onSourceFrameError?.call();
       if (kDebugMode) {
         debugPrint(stackTrace.toString());
         debugPrint('plPlayer err:  $err');

@@ -12,6 +12,8 @@ class VideoTransitionGeometry {
     required this.viewport,
     required double progress,
     this.mode = VideoTransitionMode.homeCard,
+    this.returnStart,
+    this.contentTop = 0,
   }) : expansion =
            (mode == VideoTransitionMode.detailRelated
                    ? Curves.easeInOut
@@ -22,8 +24,63 @@ class VideoTransitionGeometry {
   final Size viewport;
   final double expansion;
   final VideoTransitionMode mode;
+  final double? returnStart;
+  final double contentTop;
 
-  Rect get container => Rect.lerp(source, Offset.zero & viewport, expansion)!;
+  double get _startExpansion => Curves.easeInOut.transform(returnStart ?? 1);
+  bool get returning =>
+      mode == VideoTransitionMode.detailRelated &&
+      returnStart != null &&
+      expansion <= _startExpansion;
+  double get returnProgress => returning
+      ? (1 - expansion / _startExpansion.clamp(0.000001, 1)).clamp(0, 1)
+      : 0;
+  Rect get contentBounds => Rect.fromLTWH(
+    0,
+    paintContentTop,
+    viewport.width,
+    (viewport.height - paintContentTop).clamp(0, double.infinity),
+  );
+  // Interrupted entry releases its already-moving chrome continuously.
+  double get paintContentTop => returning && _startExpansion < 1
+      ? contentTop * _returnTrack(0, .20)
+      : contentTop;
+  bool get separateChrome => returning && paintContentTop > 0;
+  Rect get bannerRect =>
+      container.topLeft & (source.size * (container.width / source.width));
+  double _returnTrack(double a, double b) =>
+      Interval(a, b, curve: Curves.easeInOutCubic).transform(returnProgress);
+  double get mediaOpacity => 1 - _returnTrack(.04, .62);
+  double get bodyOpacity => 1 - _returnTrack(0, .45);
+  double get panelOpacity => 1 - _returnTrack(.35, .78);
+  double get bannerOpacity => returning
+      ? lerpDouble(
+          1 -
+              const Interval(
+                0,
+                .12,
+                curve: Curves.easeInOutCubic,
+              ).transform(_startExpansion),
+          1,
+          _returnTrack(.08, .48),
+        )!
+      : relatedSourceOpacity;
+
+  Rect get container {
+    if (!returning) {
+      return Rect.lerp(source, Offset.zero & viewport, expansion)!;
+    }
+    final start = Rect.lerp(source, Offset.zero & viewport, _startExpansion)!;
+    final inset = paintContentTop * start.width / viewport.width;
+    final effective = Rect.fromLTRB(
+      start.left,
+      start.top + inset,
+      start.right,
+      start.bottom,
+    );
+    return Rect.lerp(effective, source, returnProgress)!;
+  }
+
   double get scale => container.width / viewport.width;
   double get radius => 12 * (1 - expansion) + 64 * expansion * (1 - expansion);
   double get remainderOpacity => 1 - _track(0.04, 0.28);
@@ -56,6 +113,8 @@ class VideoTransitionGeometry {
   double _track(double begin, double end) =>
       Interval(begin, end, curve: Curves.easeInOutCubic).transform(expansion);
 
-  Offset mapPoint(Offset point) => container.topLeft + point * scale;
+  Offset mapPoint(Offset point) =>
+      container.topLeft +
+      (point - (returning ? contentBounds.topLeft : Offset.zero)) * scale;
   Rect mapRect(Rect rect) => mapPoint(rect.topLeft) & (rect.size * scale);
 }

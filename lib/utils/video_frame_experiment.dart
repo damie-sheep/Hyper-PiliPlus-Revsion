@@ -9,6 +9,10 @@ const videoFrameExperiment =
     ? _requested
     : '';
 const videoFrameExperimentLivePaint =
-    videoFrameExperiment == 'X1' || videoFrameExperiment == 'X3';
+    videoFrameExperiment == '' ||
+    videoFrameExperiment == 'X1' ||
+    videoFrameExperiment == 'X3';
 const videoFrameExperimentDefaultListener =
-    videoFrameExperiment == 'X2' || videoFrameExperiment == 'X3';
+    videoFrameExperiment == '' ||
+    videoFrameExperiment == 'X2' ||
+    videoFrameExperiment == 'X3';

@@ -68,6 +68,8 @@ public class VideoOutput {
     private long availableCount;
     private long consumedCount;
     private Runnable frameTimeout;
+    private volatile long observationEpoch;
+    private volatile long waitingGeneration = -1;
     private static final Handler copyHandler;
     static {
         final HandlerThread thread = new HandlerThread("PiliVideoFrameCopy");
@@ -93,10 +95,19 @@ public class VideoOutput {
             result.success(frameOutcome(generation, disposed ? "disposed" : "unavailable"));
             return;
         }
-        if (sourceFrames.armWithReason(generation, reason -> mainHandler.post(() -> {
+        observationEpoch++;
+        waitingGeneration = generation;
+        if (sourceFrames.armWithReason(generation, reason -> {
+          final long completedSurface = surfaceEpoch;
+          mainHandler.post(() -> {
             VideoDiagnostics.record(this, "frame:" + reason, generation);
-            result.success(frameOutcome(generation, reason));
-        }))) scheduleFrameTimeout(generation);
+            result.success(frameOutcome(generation, completedSurface == surfaceEpoch ? reason : "superseded"));
+          });
+        })) scheduleFrameTimeout(generation);
+    }
+
+    public boolean isSourceFrameCurrent(long generation, long output, long surface) {
+        return !disposed && waitingGeneration == generation && outputEpoch == output && surfaceEpoch == surface;
     }
 
     private HashMap<String, Object> frameOutcome(long generation, String status) {
@@ -110,7 +121,7 @@ public class VideoOutput {
         result.put("variant", experiment);
         result.put("defaultListener", defaultListener);
         result.put("availableObserved", !defaultListener);
-        result.put("consumedObserver", !experiment.isEmpty());
+        result.put("consumedObserver", true);
         result.put("status", status);
         result.put("availableCount", availableCount);
         result.put("consumedCount", consumedCount);
@@ -134,6 +145,10 @@ public class VideoOutput {
     public void cancelSourceFrame(long generation) {
         VideoDiagnostics.record(this, "frame:cancel", generation);
         sourceFrames.cancel(generation);
+        if (waitingGeneration == generation) {
+            waitingGeneration = -1;
+            observationEpoch++;
+        }
     }
 
     /** PixelCopy scales on the native side; no mpv readback or PNG loop on Dart UI. */
@@ -184,7 +199,7 @@ public class VideoOutput {
 
     VideoOutput(long handle, MethodChannel channelReference, TextureRegistry textureRegistryReference, String experiment) {
         this.experiment = experiment;
-        defaultListener = "X2".equals(experiment) || "X3".equals(experiment);
+        defaultListener = experiment.isEmpty() || "X2".equals(experiment) || "X3".equals(experiment);
         VideoDiagnostics.record(this, "surface:output-create", 0);
         this.handle = handle;
         this.channelReference = channelReference;
@@ -210,18 +225,22 @@ public class VideoOutput {
         // Independent public observation slot. Do not overwrite the engine's
         // available listener or reflectively mutate SurfaceTextureWrapper.
         // The callback is on the raster thread; channel/gate work stays on main.
-        if (!experiment.isEmpty()) surfaceTextureEntry.setOnFrameConsumedListener(() -> mainHandler.post(() -> {
+        surfaceTextureEntry.setOnFrameConsumedListener(() -> {
+          final long observed = observationEpoch;
+          final long observedGeneration = waitingGeneration;
+          mainHandler.post(() -> {
             if (disposed) return;
             consumedCount++;
             if (consumedCount <= 8 || consumedCount % 60 == 0) {
                 VideoDiagnostics.record(this, "surface:consumed", consumedCount);
             }
-            if (defaultListener && outputWidth > 1 && outputHeight > 1) {
-                // Deliberately a stage A proxy, NOT new-source proof for B1.
-                sourceFrames.frame();
+            if (observed == observationEpoch && defaultListener && outputWidth > 1 && outputHeight > 1) {
+                // Consumption is a candidate, never proof of media identity.
+                sourceFrames.frame(observedGeneration);
                 notifyFirstFrame();
             }
-        }));
+          });
+        });
 
         // If we call setOnFrameAvailableListener after creating SurfaceTextureEntry, the texture won't be displayed inside Flutter UI, because callback set by us will override the Flutter engine's own registered callback:
         // https://github.com/flutter/engine/blob/f47e864f2dcb9c299a3a3ed22300a1dcacbdf1fe/shell/platform/android/io/flutter/view/FlutterView.java#L942-L958
@@ -311,7 +330,7 @@ public class VideoOutput {
     public void dispose() {
         disposed = true;
         if (frameTimeout != null) mainHandler.removeCallbacks(frameTimeout);
-        if (!experiment.isEmpty()) surfaceTextureEntry.setOnFrameConsumedListener(null);
+        surfaceTextureEntry.setOnFrameConsumedListener(null);
         VideoDiagnostics.record(this, "surface:dispose-output-epoch", outputEpoch);
         sourceFrames.close();
         try {
@@ -341,6 +360,8 @@ public class VideoOutput {
     }
 
     public long createSurface() {
+        observationEpoch++;
+        sourceFrames.resetObservations();
         VideoDiagnostics.record(this, "surface:create-start", 0);
         VideoDiagnostics.record(this, "surface:epoch", ++surfaceEpoch);
         synchronized (lock) {

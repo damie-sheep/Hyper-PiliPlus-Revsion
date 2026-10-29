@@ -1,4 +1,5 @@
 import 'package:PiliPlus/plugin/pl_player/widgets/video_frame_gate.dart';
+import 'package:PiliPlus/utils/video_frame_experiment.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -18,7 +19,7 @@ int textureLayers(Layer root) {
 }
 
 void main() {
-  for (final livePaint in [false, true]) {
+  for (final livePaint in [videoFrameExperimentLivePaint, false]) {
     testWidgets('waiting gate: livePaint=$livePaint', (tester) async {
       final boundary = GlobalKey();
       var taps = 0;

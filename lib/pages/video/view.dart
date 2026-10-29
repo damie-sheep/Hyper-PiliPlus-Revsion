@@ -409,6 +409,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   @override
   void dispose() {
     videoDetailController.isForeground = false;
+    plPlayerController?.cancelFrameConfirmation();
     _frameReadyWorker.dispose();
     _restoreGeneration++;
     if (_retainedFrame.value case final image?) {
@@ -640,12 +641,15 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                       statusBarBrightness = .dark;
                       statusBarIconBrightness = .light;
                     }
-                    return SimpleAppBar(
-                      height: padding.top,
-                      backgroundColor: backgroundColor,
-                      brightness: brightness,
-                      statusBarBrightness: statusBarBrightness,
-                      statusBarIconBrightness: statusBarIconBrightness,
+                    return VideoTransitionTargetPart(
+                      part: VideoTransitionPart.chrome,
+                      child: SimpleAppBar(
+                        height: padding.top,
+                        backgroundColor: backgroundColor,
+                        brightness: brightness,
+                        statusBarBrightness: statusBarBrightness,
+                        statusBarIconBrightness: statusBarIconBrightness,
+                      ),
                     );
                   },
                 ),
@@ -708,24 +712,27 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 ),
               ];
             },
-            body: MiniScaffold(
-              key: videoDetailController.childKey,
-              body: Column(
-                children: [
-                  buildTabBar(onTap: videoDetailController.animToTop),
-                  Expanded(
-                    child: tabBarView(
-                      hitTestBehavior: .translucent,
-                      controller: videoDetailController.tabCtr,
-                      children: [
-                        videoIntro(isHorizontal: false, needCtr: false),
-                        if (videoDetailController.showReply)
-                          videoReplyPanel(isNested: true),
-                        if (_shouldShowSeasonPanel) seasonPanel,
-                      ],
+            body: VideoTransitionTargetPart(
+              part: VideoTransitionPart.content,
+              child: MiniScaffold(
+                key: videoDetailController.childKey,
+                body: Column(
+                  children: [
+                    buildTabBar(onTap: videoDetailController.animToTop),
+                    Expanded(
+                      child: tabBarView(
+                        hitTestBehavior: .translucent,
+                        controller: videoDetailController.tabCtr,
+                        children: [
+                          videoIntro(isHorizontal: false, needCtr: false),
+                          if (videoDetailController.showReply)
+                            videoReplyPanel(isNested: true),
+                          if (_shouldShowSeasonPanel) seasonPanel,
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -870,7 +877,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
               }
             },
             behavior: .opaque,
-            child: _buildOverlayToolBar(scrollRatio),
+            child: VideoTransitionTargetPart(
+              part: VideoTransitionPart.content,
+              child: _buildOverlayToolBar(scrollRatio),
+            ),
           ),
         );
       },
@@ -884,9 +894,12 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         backgroundColor: Colors.transparent,
         appBar: removeAppBar(isFullScreen)
             ? null
-            : SimpleAppBar(
-                height: padding.top,
-                brightness: colorScheme.brightness,
+            : VideoTransitionTargetPart(
+                part: VideoTransitionPart.chrome,
+                child: SimpleAppBar(
+                  height: padding.top,
+                  brightness: colorScheme.brightness,
+                ),
               ),
         body: Padding(
           padding: isFullScreen
@@ -919,26 +932,30 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           child: SizedBox(
             width: introWidth,
             height: maxHeight - padding.top,
-            child: MiniScaffold(
-              key: videoDetailController.childKey,
-              body: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  buildTabBar(),
-                  Expanded(
-                    child: tabBarView(
-                      controller: videoDetailController.tabCtr,
-                      children: [
-                        videoIntro(
-                          width: introWidth,
-                          height: maxHeight,
-                        ),
-                        if (videoDetailController.showReply) videoReplyPanel(),
-                        if (_shouldShowSeasonPanel) seasonPanel,
-                      ],
+            child: VideoTransitionTargetPart(
+              part: VideoTransitionPart.content,
+              child: MiniScaffold(
+                key: videoDetailController.childKey,
+                body: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    buildTabBar(),
+                    Expanded(
+                      child: tabBarView(
+                        controller: videoDetailController.tabCtr,
+                        children: [
+                          videoIntro(
+                            width: introWidth,
+                            height: maxHeight,
+                          ),
+                          if (videoDetailController.showReply)
+                            videoReplyPanel(),
+                          if (_shouldShowSeasonPanel) seasonPanel,
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -983,22 +1000,25 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 child: SizedBox(
                   width: introWidth,
                   height: introHeight,
-                  child: MiniScaffold(
-                    key: videoDetailController.childKey,
-                    body: Column(
-                      children: [
-                        buildTabBar(showIntro: false),
-                        Expanded(
-                          child: tabBarView(
-                            controller: videoDetailController.tabCtr,
-                            children: [
-                              if (videoDetailController.showReply)
-                                videoReplyPanel(),
-                              if (_shouldShowSeasonPanel) seasonPanel,
-                            ],
+                  child: VideoTransitionTargetPart(
+                    part: VideoTransitionPart.content,
+                    child: MiniScaffold(
+                      key: videoDetailController.childKey,
+                      body: Column(
+                        children: [
+                          buildTabBar(showIntro: false),
+                          Expanded(
+                            child: tabBarView(
+                              controller: videoDetailController.tabCtr,
+                              children: [
+                                if (videoDetailController.showReply)
+                                  videoReplyPanel(),
+                                if (_shouldShowSeasonPanel) seasonPanel,
+                              ],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -1065,46 +1085,52 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           child: SizedBox(
             width: maxWidth - width - padding.horizontal,
             height: maxHeight - padding.top,
-            child: MiniScaffold(
-              key: videoDetailController.childKey,
-              body: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  buildTabBar(
-                    introText: '相关视频',
-                    showIntro: videoDetailController.isFileSource
-                        ? true
-                        : showIntro,
-                  ),
-                  Expanded(
-                    child: tabBarView(
-                      controller: videoDetailController.tabCtr,
-                      children: [
-                        if (videoDetailController.isFileSource)
-                          localIntroPanel()
-                        else if (showIntro)
-                          KeepAliveWrapper(
-                            child: CustomScrollView(
-                              key: const PageStorageKey(CommonIntroController),
-                              controller:
-                                  videoDetailController.effectiveIntroScrollCtr,
-                              slivers: [
-                                VideoTransitionLayer(
-                                  sliver: true,
-                                  child: RelatedVideoPanel(
-                                    key: videoRelatedKey,
-                                    heroTag: heroTag,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        if (videoDetailController.showReply) videoReplyPanel(),
-                        if (_shouldShowSeasonPanel) seasonPanel,
-                      ],
+            child: VideoTransitionTargetPart(
+              part: VideoTransitionPart.content,
+              child: MiniScaffold(
+                key: videoDetailController.childKey,
+                body: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    buildTabBar(
+                      introText: '相关视频',
+                      showIntro: videoDetailController.isFileSource
+                          ? true
+                          : showIntro,
                     ),
-                  ),
-                ],
+                    Expanded(
+                      child: tabBarView(
+                        controller: videoDetailController.tabCtr,
+                        children: [
+                          if (videoDetailController.isFileSource)
+                            localIntroPanel()
+                          else if (showIntro)
+                            KeepAliveWrapper(
+                              child: CustomScrollView(
+                                key: const PageStorageKey(
+                                  CommonIntroController,
+                                ),
+                                controller: videoDetailController
+                                    .effectiveIntroScrollCtr,
+                                slivers: [
+                                  VideoTransitionLayer(
+                                    sliver: true,
+                                    child: RelatedVideoPanel(
+                                      key: videoRelatedKey,
+                                      heroTag: heroTag,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (videoDetailController.showReply)
+                            videoReplyPanel(),
+                          if (_shouldShowSeasonPanel) seasonPanel,
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1119,9 +1145,12 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       backgroundColor: Colors.transparent,
       appBar: removeAppBar(isFullScreen)
           ? null
-          : SimpleAppBar(
-              height: padding.top,
-              brightness: colorScheme.brightness,
+          : VideoTransitionTargetPart(
+              part: VideoTransitionPart.chrome,
+              child: SimpleAppBar(
+                height: padding.top,
+                brightness: colorScheme.brightness,
+              ),
             ),
       body: Padding(
         padding: isFullScreen
@@ -1171,34 +1200,38 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           child: SizedBox(
             width: maxWidth - padding.horizontal,
             height: bottomHeight,
-            child: MiniScaffold(
-              key: videoDetailController.childKey,
-              body: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  buildTabBar(needIndicator: false),
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: videoIntro(
-                            width: () {
-                              double flex = 1;
-                              if (videoDetailController.showReply) flex++;
-                              if (shouldShowSeasonPanel) flex++;
-                              return maxWidth / flex;
-                            }(),
-                            height: bottomHeight,
+            child: VideoTransitionTargetPart(
+              part: VideoTransitionPart.content,
+              child: MiniScaffold(
+                key: videoDetailController.childKey,
+                body: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    buildTabBar(needIndicator: false),
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: videoIntro(
+                              width: () {
+                                double flex = 1;
+                                if (videoDetailController.showReply) flex++;
+                                if (shouldShowSeasonPanel) flex++;
+                                return maxWidth / flex;
+                              }(),
+                              height: bottomHeight,
+                            ),
                           ),
-                        ),
-                        if (videoDetailController.showReply)
-                          Expanded(child: videoReplyPanel()),
-                        if (shouldShowSeasonPanel) Expanded(child: seasonPanel),
-                      ],
+                          if (videoDetailController.showReply)
+                            Expanded(child: videoReplyPanel()),
+                          if (shouldShowSeasonPanel)
+                            Expanded(child: seasonPanel),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -1657,6 +1690,25 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
             return const SizedBox.shrink();
           }),
           manualPlayerWidget(height),
+          Obx(
+            () => videoDetailController.videoFrameError.value && isShowing
+                ? Positioned.fill(
+                    child: ColoredBox(
+                      color: Colors.black87,
+                      child: Center(
+                        child: TextButton(
+                          onPressed: () =>
+                              videoDetailController.playerInit(autoplay: true),
+                          child: const Text(
+                            '画面未就绪，点击重试',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
 
           if (videoDetailController.plPlayerController.enableBlock ||
               videoDetailController.continuePlayingPart)
@@ -1912,7 +1964,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         ),
       );
     }
-    return KeepAliveWrapper(child: child);
+    return VideoTransitionTargetPart(
+      part: VideoTransitionPart.content,
+      child: KeepAliveWrapper(child: child),
+    );
   }
 
   Widget get seasonPanel => VideoTransitionLayer(

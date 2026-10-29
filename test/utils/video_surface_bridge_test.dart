@@ -17,8 +17,17 @@ void main() {
       final calls = <MethodCall>[];
       messenger.setMockMethodCallHandler(channel, (call) async {
         calls.add(call);
-        if (call.method.endsWith('AwaitSourceFrame')) {
-          return call.arguments['generation'] == 2;
+        if (call.method.endsWith('AwaitSourceFrame2')) {
+          return {
+            'version': 2,
+            'generation': call.arguments['generation'],
+            'outputEpoch': 8,
+            'surfaceEpoch': 2,
+            'signal': 'diagnostic-consumed-proxy',
+            'status': call.arguments['generation'] == 2
+                ? 'candidate'
+                : 'timeout',
+          };
         }
         return null;
       });
@@ -31,7 +40,7 @@ void main() {
   );
 
   test('missing backend is unconfirmed, not a rendered frame', () async {
-    expect(await VideoSurfaceBridge.waitForSourceFrame(1, 1), isNull);
+    expect(await VideoSurfaceBridge.waitForSourceFrame(1, 1), isFalse);
     expect(await VideoSurfaceBridge.captureFrame(1), isNull);
     await VideoSurfaceBridge.cancelSourceFrame(1, 1);
   });

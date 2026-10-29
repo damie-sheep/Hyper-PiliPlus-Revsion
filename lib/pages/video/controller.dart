@@ -120,6 +120,7 @@ class VideoDetailController extends GetxController
   late PlayUrlModel data;
   final RxBool videoState = false.obs;
   final RxBool videoFrameReady = false.obs;
+  final RxBool videoFrameError = false.obs;
   bool isForeground = true;
 
   /// 播放器配置 画质 音质 解码格式
@@ -741,6 +742,7 @@ class VideoDetailController extends GetxController
       return;
     }
     videoFrameReady.value = false;
+    videoFrameError.value = false;
     Duration? seek = defaultST ?? playedTime;
     if (seek == .zero) seek = null;
     seek ??= getFirstSegment();
@@ -783,6 +785,9 @@ class VideoDetailController extends GetxController
       onSourceFrame: () {
         if (!isClosed && isForeground) videoFrameReady.value = true;
       },
+      onSourceFrameError: () {
+        if (!isClosed && isForeground) videoFrameError.value = true;
+      },
       transitionOwner: heroTag,
     );
 
@@ -811,10 +816,13 @@ class VideoDetailController extends GetxController
       return;
     }
     try {
+      traceVideoTransition(heroTag, 'source:early-prepare-start');
       await plPlayerController.prepareForVideo();
     } catch (_) {
       // The regular source initialization reports/retries preparation failures.
       traceVideoTransition(heroTag, 'source:early-prepare-failed');
+    } finally {
+      traceVideoTransition(heroTag, 'source:early-prepare-end');
     }
   }
 

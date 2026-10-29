@@ -17,6 +17,7 @@ const videoTransitionMarkerEnabled = bool.fromEnvironment(
   'VIDEO_TRANSITION_MARKER',
 );
 final _clock = Stopwatch()..start();
+final _session = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
 final _owners = <Object?>{};
 final _lastProgress = <Object?, int>{};
 final _buffer = VideoTransitionTraceBuffer();
@@ -88,6 +89,7 @@ void recordVideoTransition(
 ]) {
   if (!videoTransitionTraceEnabled) return;
   _buffer.add({
+    'session': _session,
     'tUs': _clock.elapsedMicroseconds,
     'action': _action,
     'owner': identityHashCode(owner),
@@ -198,6 +200,9 @@ void _scheduleFlush() {
     for (final event in batch['events']! as List) {
       debugPrint('VideoTransition ${jsonEncode(event)}');
     }
+    debugPrint(
+      'VideoTransition batch complete session=$_session events=${(batch['events']! as List).length}',
+    );
   });
 }
 
@@ -231,6 +236,7 @@ void beginVideoTransitionTrace(Object? owner) {
 
 void endVideoTransitionTrace(Object? owner) {
   if (!videoTransitionTraceEnabled) return;
+  recordVideoTransition(owner, 'timing:end');
   _lastProgress.remove(owner);
   _owners.remove(owner);
   if (_owners.isEmpty) _scheduleFlush();
